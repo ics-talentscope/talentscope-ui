@@ -1,0 +1,65 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Testing
+coverage
+
+# Next.js
+.next
+out
+build
+
+# Production
+dist
+
+# Generated / legacy question bank exports (use excel/QB-new.xlsx only)
+Question Bank*.xlsx
+__pycache__/
+*.pyc
+*.pem
+*.bak
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env
+.env.azure
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# IDE
+.vscode
+.idea
+
+# OS
+Thumbs.db
+
+# TypeScript / build caches
+*.tsbuildinfo
+build.log
+
+# Scratch scripts and sub-projects
+scratch/
+
+# Local GGUF weights (Qwen/Laya/FaceNet live in ../talentscope-python/services)
+*.gguf
+
+# Credential workbooks, resumes and raw HR files (see docs/IMP Docs/rules.md)
+docs/NON-Needed docs/
+
+# Kilo audit tool directory
+.kilo/
+
+# Portal click-by-click overlay is generated locally; live data is in Supabase
+src/data/portal-question-answers.json

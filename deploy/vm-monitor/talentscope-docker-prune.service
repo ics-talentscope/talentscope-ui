@@ -1,0 +1,9 @@
+[Unit]
+Description=Reclaim Docker build cache and dangling images for TalentScope
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker builder prune --force --filter until=48h
+ExecStart=/usr/bin/docker image prune --force --filter until=168h
+Nice=15
+IOSchedulingClass=idle

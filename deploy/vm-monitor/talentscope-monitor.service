@@ -1,0 +1,10 @@
+[Unit]
+Description=TalentScope VM metrics snapshot for the admin Monitor
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/talentscope-monitor/collect.py
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=40%
+TimeoutStartSec=120
