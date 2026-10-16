@@ -43,6 +43,7 @@ import {
   fmtPct,
   toneFor,
   type Tone,
+  historyNote,
 } from "./ui";
 
 type Sec<T = any> = { ok: boolean; data?: T; error?: string; needsPermission?: boolean } | undefined;
@@ -51,7 +52,19 @@ const ok = <T,>(s: Sec<T>): T | undefined => (s && s.ok ? (s.data as T) : undefi
 
 const DB_ERROR_RE = /mssql|tedious|RequestError|ConnectionError|ETIMEOUT|ESOCKET|deadlock|Login failed|SQL Server/i;
 
-export default function DbPanel({ data, vm, latencyHistory }: { data: any; vm: any; latencyHistory: Array<{ t: string; ms: number }> }) {
+export default function DbPanel({
+  data,
+  vm,
+  latencyHistory,
+  period,
+  isLive,
+}: {
+  data: any;
+  vm: any;
+  latencyHistory: Array<{ t: string; ms: number }>;
+  period: string;
+  isLive: boolean;
+}) {
   const [tableSort, setTableSort] = useState<"size" | "rows" | "name">("size");
 
   const server = ok<any>(data?.server);
@@ -71,6 +84,12 @@ export default function DbPanel({ data, vm, latencyHistory }: { data: any; vm: a
   const sl = data?.serverLevel ?? {};
   const login = server?.login ?? "TalentScopeAdmin";
   const grant = `GRANT VIEW SERVER PERFORMANCE STATE TO [${login}];`;
+  const stored: any[] = data?.history?.points ?? [];
+  const span = period;
+  const showStored = stored.length > 0 || !isLive;
+  const latencyChart = showStored ? stored.map((p) => ({ t: p.t, ms: p.latencyMs ?? null })) : latencyHistory;
+  const failedPeriods = stored.filter((p) => Number(p.down) > 0).length;
+  const hasServerHistory = stored.some((p) => p.sqlCpu != null || p.userConnections != null);
 
   const currentDb = databases.find((d) => d.name === server?.currentDb);
   const dataFiles = files.filter((f) => f.type === "ROWS");
@@ -170,11 +189,22 @@ export default function DbPanel({ data, vm, latencyHistory }: { data: any; vm: a
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <Panel title="Connection latency" icon={Activity} subtitle="SELECT 1 round trip from the app container, sampled on every refresh while this window is open">
-          <TimeArea data={latencyHistory} series={[{ key: "ms", label: "Latency", color: COLORS.indigo }]} unit=" ms" height={170} />
+        <Panel
+          title={showStored ? `Connection latency (${span})` : "Connection latency"}
+          icon={Activity}
+          subtitle={
+            showStored
+              ? `SELECT 1 round trip from the app, recorded every minute even when this window is closed. ${historyNote(data.history)}`
+              : "SELECT 1 round trip from the app container, sampled on every refresh while this window is open"
+          }
+        >
+          <TimeArea data={latencyChart} series={[{ key: "ms", label: "Latency", color: COLORS.indigo }]} unit=" ms" height={170} />
           <div className="mt-3">
             <KV
               items={[
+                ...(showStored
+                  ? [[`Periods with failed checks (${span})`, `${failedPeriods} of ${stored.length}`, failedPeriods ? "bad" : "ok"] as [string, React.ReactNode, Tone]]
+                  : []),
                 ["Last samples", latency ? latency.samplesMs.map((v: number) => `${v} ms`).join(" · ") : "—"],
                 ["Connection pool", pool ? `${pool.size ?? "?"} open · ${pool.available ?? "?"} idle · ${pool.borrowed ?? "?"} in use · max ${pool.max}` : "—"],
                 ["Waiting for a connection", pool?.pending ?? "—", Number(pool?.pending) > 0 ? "warn" : undefined],
@@ -209,6 +239,63 @@ export default function DbPanel({ data, vm, latencyHistory }: { data: any; vm: a
                 ["Server-level metrics", server.viewServerState ? "Allowed" : "Not allowed (see below)", server.viewServerState ? "ok" : "warn"],
               ]}
             />
+          )}
+        </Panel>
+
+        <Panel title={`Database size (${span})`} icon={HardDrive} subtitle={stored.length ? historyNote(data.history) : isLive ? "History starts recording once the app has been running for a minute" : "Nothing was recorded on this day"}>
+          <TimeArea
+            data={stored}
+            series={[
+              { key: "dataUsedMb", label: "Data used MB", color: COLORS.indigo },
+              { key: "dataMb", label: "Data allocated MB", color: COLORS.slate },
+              { key: "logMb", label: "Log file MB", color: COLORS.amber },
+            ]}
+            height={170}
+          />
+          <p className="mt-3 mb-1 text-xs font-semibold text-muted-foreground">Transaction log used ({span})</p>
+          <TimeArea data={stored} series={[{ key: "logUsedPct", label: "Log used %", color: COLORS.rose }]} unit="%" yMax={100} height={110} />
+        </Panel>
+
+        <Panel title={`SQL Server load (${span})`} icon={Cpu} subtitle={hasServerHistory ? historyNote(data.history) : undefined}>
+          {hasServerHistory ? (
+            <>
+              <TimeArea
+                data={stored}
+                series={[
+                  { key: "sqlCpu", label: "SQL Server CPU %", color: COLORS.indigo },
+                  { key: "otherCpu", label: "Other CPU %", color: COLORS.amber },
+                ]}
+                unit="%"
+                yMax={100}
+                stacked
+                height={150}
+              />
+              <p className="mt-3 mb-1 text-xs font-semibold text-muted-foreground">Connections and activity ({span})</p>
+              <TimeArea
+                data={stored}
+                series={[
+                  { key: "userConnections", label: "User connections", color: COLORS.emerald },
+                  { key: "batchPerSec", label: "Batch requests / s", color: COLORS.sky },
+                  { key: "blocked", label: "Blocked processes", color: COLORS.rose },
+                ]}
+                height={150}
+              />
+            </>
+          ) : (
+            <>
+              <TimeArea
+                data={stored}
+                series={[
+                  { key: "poolInUse", label: "App connections in use", color: COLORS.emerald },
+                  { key: "poolWaiting", label: "Waiting for a connection", color: COLORS.rose },
+                ]}
+                height={150}
+              />
+              <p className="mt-3 text-xs text-muted-foreground">
+                SQL Server CPU, connections and batch requests are recorded too once the app login is granted{" "}
+                <code className="font-mono text-[11px]">{grant}</code>
+              </p>
+            </>
           )}
         </Panel>
 

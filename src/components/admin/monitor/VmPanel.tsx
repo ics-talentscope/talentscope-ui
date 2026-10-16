@@ -38,6 +38,7 @@ import {
   fmtDate,
   fmtDuration,
   fmtNum,
+  historyNote,
   fmtPct,
   timeLabel,
   toneFor,
@@ -52,11 +53,12 @@ function SectionError({ value }: { value: any }) {
 
 const shortUnit = (u: string) => String(u).replace(/\.service$/, "").replace(/^actions\.runner\..*/, "github-runner");
 
-export default function VmPanel({ data, liveHistory }: { data: any; liveHistory: Array<{ t: string; cpu: number; mem: number }> }) {
+export default function VmPanel({ data, liveHistory, period }: { data: any; liveHistory: Array<{ t: string; cpu: number; mem: number }>; period: string }) {
   const s = data?.snapshot ?? {};
   const live = data?.live && !data.live.error ? data.live : null;
   const collector = data?.collector ?? {};
-  const history: any[] = data?.history ?? [];
+  const history: any[] = data?.history?.points ?? [];
+  const span = period;
   const runtime = data?.runtime ?? null;
 
   const sys = hasError(s.system) ? {} : s.system ?? {};
@@ -167,7 +169,7 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <Panel title="CPU & memory (24 h)" icon={Cpu} subtitle="One point per minute from the collector">
+        <Panel title={`CPU & memory (${span})`} icon={Cpu} subtitle={historyNote(data?.history)}>
           <TimeArea
             data={historyChart}
             series={[
@@ -192,7 +194,7 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
             height={210}
           />
         </Panel>
-        <Panel title="Load & I/O wait (24 h)" icon={Activity}>
+        <Panel title={`Load & I/O wait (${span})`} icon={Activity}>
           <TimeArea
             data={historyChart}
             series={[
@@ -202,7 +204,7 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
             height={190}
           />
         </Panel>
-        <Panel title="Network throughput (24 h)" icon={Network} subtitle="All interfaces except loopback, KB/s">
+        <Panel title={`Network throughput (${span})`} icon={Network} subtitle="All interfaces except loopback, KB/s">
           <TimeArea
             data={historyChart}
             series={[
@@ -229,6 +231,15 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
                 stacked
                 height={190}
                 xFormatter={(v) => timeLabel(`${v}:00Z`)}
+              />
+              <p className="mt-4 mb-1 text-xs font-semibold text-muted-foreground">Requests per minute, averaged ({span})</p>
+              <TimeArea
+                data={historyChart}
+                series={[
+                  { key: "requests", label: "Requests / min", color: COLORS.sky },
+                  { key: "errors5xx", label: "5xx / min", color: COLORS.rose },
+                ]}
+                height={150}
               />
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
                 <div>
@@ -311,7 +322,7 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
               { key: "inodesPercent", label: "Inodes", align: "right" },
             ]}
           />
-          <p className="mt-3 mb-1 text-xs font-semibold text-muted-foreground">Disk usage trend (24 h)</p>
+          <p className="mt-3 mb-1 text-xs font-semibold text-muted-foreground">Disk usage trend ({span})</p>
           <TimeArea data={historyChart} series={[{ key: "disk", label: "Root disk %", color: COLORS.violet }]} unit="%" height={120} />
         </Panel>
 
@@ -387,7 +398,7 @@ export default function VmPanel({ data, liveHistory }: { data: any; liveHistory:
               ]}
             />
           </div>
-          <p className="mt-4 mb-1 text-xs font-semibold text-muted-foreground">App container CPU & memory (24 h)</p>
+          <p className="mt-4 mb-1 text-xs font-semibold text-muted-foreground">App container CPU & memory ({span})</p>
           <TimeArea
             data={historyChart}
             series={[

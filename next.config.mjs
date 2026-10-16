@@ -1,15 +1,23 @@
 import { fileURLToPath } from "url";
 import path from "path";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const backendUrl = process.env.BACKEND_URL?.trim().replace(/\/$/, "");
+import nextEnv from "@next/env";
 
-if (process.env.VERCEL && !backendUrl) {
-  throw new Error("Set BACKEND_URL to the deployed Python API URL in Vercel project settings.");
-}
+const { loadEnvConfig } = nextEnv;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+loadEnvConfig(path.join(__dirname, ".."));
+
+const backendUrl = (process.env.BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const onVercel = process.env.VERCEL === "1";
+const backendIsLocal = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(backendUrl);
+const supabaseOrigin = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
+const connectSrc = ["'self'", "https://cdn.jsdelivr.net", supabaseOrigin].filter(Boolean).join(" ");
+const mediaSrc = ["'self'", "blob:", supabaseOrigin].filter(Boolean).join(" ");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  // Docker uses a standalone server. Vercel builds its own serverless output.
+  ...(onVercel ? {} : { output: "standalone" }),
   poweredByHeader: false,
   outputFileTracingRoot: __dirname,
   turbopack: { root: __dirname },
@@ -18,7 +26,9 @@ const nextConfig = {
     proxyTimeout: 600_000,
   },
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${backendUrl || "http://127.0.0.1:8000"}/api/:path*` }];
+    // On Vercel, 127.0.0.1 is the function itself. Set BACKEND_URL to a public API.
+    if (onVercel && backendIsLocal) return [];
+    return [{ source: "/api/:path*", destination: `${backendUrl}/api/:path*` }];
   },
   async headers() {
     return [
@@ -28,7 +38,7 @@ const nextConfig = {
           {
             key: "Content-Security-Policy",
             value:
-              "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://cdn.jsdelivr.net; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'; object-src 'none'; base-uri 'self';",
+              `default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://cdn.jsdelivr.net ${supabaseOrigin}; media-src ${mediaSrc}; worker-src 'self' blob:; connect-src ${connectSrc}; frame-ancestors 'none'; object-src 'none'; base-uri 'self';`,
           },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },

@@ -43,6 +43,15 @@ export default function EmployeeLoginPage() {
   const [modalError, setModalError] = useState("");
   const [modalSubmitting, setModalSubmitting] = useState(false);
 
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/employee/auth/saml/status", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setSsoEnabled(Boolean(data?.enabled)))
+      .catch(() => setSsoEnabled(false));
+  }, []);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       const searchParams = new URLSearchParams(window.location.search);
@@ -384,6 +393,8 @@ export default function EmployeeLoginPage() {
               </Button>
             </form>
 
+            {ssoEnabled && (
+            <>
             {/* Divider */}
             <div className="relative my-4 z-10 flex items-center justify-center">
               <div className="absolute inset-0 flex items-center">
@@ -409,6 +420,8 @@ export default function EmployeeLoginPage() {
               </svg>
               <span className="text-xs">Sign in with Microsoft</span>
             </Button>
+            </>
+            )}
 
             {/* First-time hint */}
             <div className="mt-4 rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5 relative z-10">

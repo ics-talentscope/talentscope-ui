@@ -126,6 +126,54 @@ export const timeLabel = (iso: unknown) => {
   return d ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "";
 };
 
+const dayTimeLabel = (iso: unknown) => {
+  const d = toDate(iso);
+  return d ? d.toLocaleString(undefined, { weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+};
+
+export type HistoryPeriod = { id: string; label: string; title: string; today: boolean; from: number; to: number };
+
+const BLOCK_HOURS = 6;
+const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00`;
+
+export const currentBlockId = (now = new Date()) => `today-${Math.floor(now.getHours() / BLOCK_HOURS)}`;
+
+/** Today's 6-hour blocks that have started (newest first), then each previous day as a whole day, in the viewer's time zone. */
+export function buildHistoryPeriods(now = new Date(), days = 7): HistoryPeriod[] {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const periods: HistoryPeriod[] = [];
+  for (let i = 24 / BLOCK_HOURS - 1; i >= 0; i--) {
+    const start = new Date(midnight);
+    start.setHours(i * BLOCK_HOURS);
+    if (start > now) continue;
+    const end = new Date(midnight);
+    end.setHours((i + 1) * BLOCK_HOURS);
+    const label = `${hourLabel(i * BLOCK_HOURS)}–${hourLabel((i + 1) * BLOCK_HOURS)}`;
+    periods.push({ id: `today-${i}`, label, title: `today ${label}`, today: true, from: start.getTime() / 1000, to: end.getTime() / 1000 });
+  }
+  for (let d = 1; d <= days; d++) {
+    const start = new Date(midnight);
+    start.setDate(midnight.getDate() - d);
+    const end = new Date(midnight);
+    end.setDate(midnight.getDate() - d + 1);
+    const label = start.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    periods.push({ id: `day-${d}`, label, title: label, today: false, from: start.getTime() / 1000, to: end.getTime() / 1000 });
+  }
+  return periods;
+}
+
+/** Subtitle for charts drawn from the stored history. */
+export function historyNote(
+  history: { bucketSeconds?: number; from?: string; oldestAt?: string | null; retentionDays?: number } | undefined,
+) {
+  if (!history) return undefined;
+  const step = Number(history.bucketSeconds) >= 3600 ? "Hourly averages" : `${Math.round(Number(history.bucketSeconds || 60) / 60)}-minute averages`;
+  const partial =
+    history.oldestAt && history.from && new Date(history.oldestAt) > new Date(history.from) ? ` · recording started ${fmtDate(history.oldestAt)}` : "";
+  return `${step} · kept ${history.retentionDays ?? 7} days${partial}`;
+}
+
 /* ---------------- building blocks ---------------- */
 
 export function StatusDot({ tone, pulse = false }: { tone: Tone; pulse?: boolean }) {
@@ -332,7 +380,10 @@ export function TimeArea({
   stacked?: boolean;
   xKey?: string;
 }) {
-  if (!data?.length) return <p className="text-sm text-muted-foreground">Not enough data yet</p>;
+  if (!data?.length) return <p className="text-sm text-muted-foreground">No data recorded for this period yet</p>;
+  const first = toDate(data[0][xKey]);
+  const last = toDate(data[data.length - 1][xKey]);
+  const tickFormatter = first && last && last.getTime() - first.getTime() > 86400_000 ? dayTimeLabel : timeLabel;
   return (
     <div className="text-muted-foreground" style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -346,7 +397,7 @@ export function TimeArea({
             ))}
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="currentColor" strokeOpacity={0.12} />
-          <XAxis dataKey={xKey} tick={axisTick} tickFormatter={timeLabel} minTickGap={40} stroke="currentColor" strokeOpacity={0.3} />
+          <XAxis dataKey={xKey} tick={axisTick} tickFormatter={tickFormatter} minTickGap={40} stroke="currentColor" strokeOpacity={0.3} />
           <YAxis tick={axisTick} domain={[0, yMax ?? "auto"]} stroke="currentColor" strokeOpacity={0.3} unit={unit} width={52} />
           <Tooltip
             contentStyle={{ background: "var(--popover, #111827)", border: "1px solid rgba(148,163,184,.3)", borderRadius: 10, fontSize: 12 }}

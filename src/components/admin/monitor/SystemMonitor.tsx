@@ -4,13 +4,19 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Database, Loader2, RefreshCcw, Server, X } from "lucide-react";
 import DbPanel from "./DbPanel";
 import VmPanel from "./VmPanel";
-import { fmtAgo } from "./ui";
+import { buildHistoryPeriods, currentBlockId, fmtAgo } from "./ui";
 
 type Target = "db" | "vm";
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
 const MAX_LIVE_POINTS = 240;
-const REFRESH_OPTIONS = [0, 15, 30, 60];
+const REFRESH_OPTIONS: Array<[number, string]> = [
+  [3600, "Every hour"],
+  [900, "Every 15 min"],
+  [300, "Every 5 min"],
+  [60, "Every minute"],
+  [0, "Manual"],
+];
 
 export default function SystemMonitor({ open, onClose, fetcher }: { open: boolean; onClose: () => void; fetcher: Fetcher }) {
   const [tab, setTab] = useState<Target>("db");
@@ -18,11 +24,18 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
   const [errors, setErrors] = useState<Record<Target, string | null>>({ db: null, vm: null });
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
-  const [refreshSeconds, setRefreshSeconds] = useState(30);
+  const [refreshSeconds, setRefreshSeconds] = useState(3600);
+  const [chosenPeriod, setChosenPeriod] = useState<string | null>(null);
   const [latencyHistory, setLatencyHistory] = useState<Array<{ t: string; ms: number }>>([]);
   const [liveHistory, setLiveHistory] = useState<Array<{ t: string; cpu: number; mem: number }>>([]);
   const [, setTick] = useState(0);
   const busy = useRef(false);
+
+  const now = new Date();
+  const periods = buildHistoryPeriods(now);
+  const liveId = currentBlockId(now);
+  const period = periods.find((p) => p.id === (chosenPeriod ?? liveId)) ?? periods[0];
+  const { from: periodFrom, to: periodTo } = period;
 
   const load = useCallback(async () => {
     if (busy.current) return;
@@ -30,7 +43,7 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
     setLoading(true);
     const fetchOne = async (target: Target) => {
       try {
-        const res = await fetcher(`/api/admin/monitor?target=${target}`, { cache: "no-store" });
+        const res = await fetcher(`/api/admin/monitor?target=${target}&from=${periodFrom}&to=${periodTo}`, { cache: "no-store" });
         const body = await res.json().catch(() => null);
         if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
         return { target, body, error: null as string | null };
@@ -57,7 +70,7 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
     setUpdatedAt(now);
     setLoading(false);
     busy.current = false;
-  }, [fetcher]);
+  }, [fetcher, periodFrom, periodTo]);
 
   useEffect(() => {
     if (!open) return;
@@ -132,14 +145,40 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
           <div className="flex items-center gap-2">
             <span className="hidden sm:inline text-xs text-muted-foreground">{updatedAt ? `Updated ${fmtAgo(updatedAt)}` : "Loading…"}</span>
             <select
+              value={period.id}
+              onChange={(e) => setChosenPeriod(e.target.value === liveId ? null : e.target.value)}
+              className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+              aria-label="History period"
+            >
+              <optgroup label={`Today, ${now.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`}>
+                {periods
+                  .filter((p) => p.today)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      History: today {p.label}
+                      {p.id === liveId ? " (now)" : ""}
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="Previous days">
+                {periods
+                  .filter((p) => !p.today)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      History: {p.label}
+                    </option>
+                  ))}
+              </optgroup>
+            </select>
+            <select
               value={refreshSeconds}
               onChange={(e) => setRefreshSeconds(Number(e.target.value))}
               className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground"
               aria-label="Auto refresh"
             >
-              {REFRESH_OPTIONS.map((s) => (
+              {REFRESH_OPTIONS.map(([s, label]) => (
                 <option key={s} value={s}>
-                  {s ? `Every ${s}s` : "Manual"}
+                  {label}
                 </option>
               ))}
             </select>
@@ -178,9 +217,9 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
               <Loader2 className="h-5 w-5 animate-spin" /> Collecting metrics…
             </div>
           ) : tab === "db" ? (
-            <DbPanel data={data.db} vm={data.vm} latencyHistory={latencyHistory} />
+            <DbPanel data={data.db} vm={data.vm} latencyHistory={latencyHistory} period={period.title} isLive={period.id === liveId} />
           ) : (
-            <VmPanel data={data.vm} liveHistory={liveHistory} />
+            <VmPanel data={data.vm} liveHistory={liveHistory} period={period.title} />
           )}
         </div>
       </main>

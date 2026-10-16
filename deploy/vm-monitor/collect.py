@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """VM metrics snapshot for the admin Monitor overlay (VM tab).
 
-Run as root every minute by talentscope-monitor.timer. Writes snapshot.json and history.json
-(24 h at 1-minute resolution) into /var/lib/talentscope-monitor, which the app container mounts
-read-only. Output must never contain secrets: command lines are reduced to program names and
-log lines go through redact().
+Run as root every minute by talentscope-monitor.timer. Writes snapshot.json and appends one line
+per run to history.jsonl (today plus 7 previous days at 1-minute resolution) in
+/var/lib/talentscope-monitor, which the app container mounts read-only. Output must never contain
+secrets: command lines are reduced to program names and log lines go through redact().
 """
 import json
 import os
@@ -20,7 +20,7 @@ OUT_DIR = os.environ.get("MONITOR_DIR", "/var/lib/talentscope-monitor")
 APP_CONTAINER = os.environ.get("MONITOR_APP_CONTAINER", "talentscope-api")
 DEPLOY_DIR = os.environ.get("MONITOR_DEPLOY_DIR", "/opt/talentscope")
 SLOW_TTL_SECONDS = int(os.environ.get("MONITOR_SLOW_TTL", "300"))
-HISTORY_POINTS = 1440
+HISTORY_SECONDS = 8 * 86400
 NGINX_ACCESS = "/var/log/nginx/access.log"
 NGINX_ERROR = "/var/log/nginx/error.log"
 SERVICES = os.environ.get("MONITOR_SERVICES", "nginx,docker,ssh,qwen,facenet,cron").split(",")
@@ -258,7 +258,7 @@ def timers():
         log = run(["journalctl", "-u", svc, "--since", "-24h", "-o", "short-iso", "--no-pager", "-q"], timeout=30).splitlines()
         runs = sum(1 for l in log if " Finished " in l)
         fails = sum(1 for l in log if "Failed with result" in l or "failed with result" in l or "Failed to start" in l)
-        summary = next((l for l in reversed(log) if "[sync] done" in l or "[storage] done" in l), None)
+        summary = next((l for l in reversed(log) if re.search(r"\[(sync|storage|live-to-dev)\] done", l)), None)
         errors = [redact(l)[:300] for l in log if re.search(r"(?i)\b(error|exception|failed)\b", l) and "Failed with result" not in l][-5:]
         start, end = ts_or_none(s.get("ExecMainStartTimestamp")), ts_or_none(s.get("ExecMainExitTimestamp"))
         res.append({
@@ -520,19 +520,67 @@ def deployment():
 
 # ---------------------------------------------------------------- history
 
-def update_history(snapshot):
-    path = os.path.join(OUT_DIR, "history.json")
+def read_jsonl_line(path, last):
     try:
-        history = json.loads(read(path, "[]"))
+        with open(path, "rb") as fh:
+            if not last:
+                return json.loads(fh.readline() or b"null")
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 4096))
+            lines = [l for l in fh.read().splitlines() if l.strip()]
+            return json.loads(lines[-1]) if lines else None
     except Exception:
-        history = []
+        return None
+
+
+def write_lines(path, points):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for point in points:
+            fh.write(json.dumps(point, separators=(",", ":"), default=str) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def migrate_history(path):
+    old = os.path.join(OUT_DIR, "history.json")
+    if not os.path.exists(old):
+        return
+    if not os.path.exists(path):
+        try:
+            points = json.loads(read(old, "[]"))
+        except Exception:
+            points = []
+        write_lines(path, points)
+    os.remove(old)
+
+
+def prune_history(path, now):
+    first = read_jsonl_line(path, last=False)
+    if not first or first.get("ts", now) >= now - HISTORY_SECONDS - 3600:
+        return
+    keep = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                point = json.loads(line)
+            except Exception:
+                continue
+            if point.get("ts", 0) >= now - HISTORY_SECONDS:
+                keep.append(point)
+    write_lines(path, keep)
+
+
+def update_history(snapshot):
+    path = os.path.join(OUT_DIR, "history.jsonl")
+    migrate_history(path)
     net = snapshot["network"] if isinstance(snapshot.get("network"), dict) else {}
     rx = sum(v["rx"] for v in net.values())
     tx = sum(v["tx"] for v in net.values())
     now = time.time()
     rx_rate = tx_rate = None
-    if history:
-        prev = history[-1]
+    prev = read_jsonl_line(path, last=True)
+    if prev:
         dt = now - prev.get("ts", now)
         if 0 < dt < 600 and prev.get("rx") is not None and rx >= prev["rx"]:
             rx_rate, tx_rate = round((rx - prev["rx"]) / dt), round((tx - prev["tx"]) / dt)
@@ -551,9 +599,10 @@ def update_history(snapshot):
         "requests": sum(last_full.get(k, 0) for k in ("2xx", "3xx", "4xx", "5xx")) if last_full else None,
         "errors5xx": last_full.get("5xx") if last_full else None,
     }
-    history.append(point)
-    history = history[-HISTORY_POINTS:]
-    write_json(path, history)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(point, separators=(",", ":"), default=str) + "\n")
+    os.chmod(path, 0o644)
+    prune_history(path, now)
 
 
 def write_json(path, data):
