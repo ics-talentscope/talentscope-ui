@@ -24,7 +24,7 @@ It acts as the single-origin client interface for candidates, employees, and adm
   - Internal skill assessments, MCQ learning quizzes, video proctoring, and SAML 2.0 Single Sign-On.
 
 ### 2. Single Origin API Proxy
-All client calls target `/api/...` on origin `http://localhost:3000`. The rewrite destination is captured when Next.js builds, so set `BACKEND_URL` during the build. Docker Compose passes `http://python:8000` as a build argument; local development defaults to `http://127.0.0.1:8000`. Configured in `next.config.mjs`:
+All client calls target `/api/...` on origin `http://localhost:3000`. The rewrite destination is captured when Next.js starts or builds, so set `BACKEND_URL` before starting the dev server or building. In this workspace, `next.config.mjs` loads it from the root `.env.local`; Docker Compose passes `http://python:8000` as a build argument. Local development defaults to `http://127.0.0.1:8000` only when no `BACKEND_URL` is configured. Restart the dev server after changing the value. Configured in `next.config.mjs`:
 ```javascript
 async rewrites() {
   const backend = process.env.BACKEND_URL || 'http://127.0.0.1:8000';

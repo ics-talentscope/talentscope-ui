@@ -5,7 +5,8 @@ import nextEnv from "@next/env";
 const { loadEnvConfig } = nextEnv;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-loadEnvConfig(path.join(__dirname, ".."));
+// Next loads env files from `ui` before importing this config; reload the workspace root.
+loadEnvConfig(path.join(__dirname, ".."), undefined, console, true);
 
 const backendUrl = (process.env.BACKEND_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const onVercel = process.env.VERCEL === "1";
