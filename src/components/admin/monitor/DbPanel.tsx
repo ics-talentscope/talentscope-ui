@@ -52,20 +52,101 @@ const ok = <T,>(s: Sec<T>): T | undefined => (s && s.ok ? (s.data as T) : undefi
 
 const DB_ERROR_RE = /mssql|tedious|RequestError|ConnectionError|ETIMEOUT|ESOCKET|deadlock|Login failed|SQL Server/i;
 
+type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+function DifferenceDetail({ detail }: { detail: any }) {
+  const changedRows = (detail.changed ?? []).flatMap((row: any) =>
+    (row.columns ?? []).map((column: any) => ({ key: row.key, ...column })),
+  );
+  return (
+    <div className="space-y-3">
+      {detail.note && <p className="text-xs text-muted-foreground">{detail.note}</p>}
+      {detail.schema?.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-semibold">Schema</p>
+          <DataTable
+            maxHeight={180}
+            rows={detail.schema}
+            columns={[
+              { key: "column", label: "Column", render: (r) => <span className="font-medium">{r.column}</span> },
+              { key: "change", label: "What changed" },
+              { key: "currentType", label: detail.current, render: (r) => showValue(r.currentType) },
+              { key: "otherType", label: detail.other, render: (r) => showValue(r.otherType) },
+            ]}
+          />
+        </div>
+      )}
+      {detail.onlyInCurrent?.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-semibold">Rows only in {detail.current}</p>
+          <RowPreview rows={detail.onlyInCurrent} />
+        </div>
+      )}
+      {detail.onlyInOther?.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-semibold">Rows only in {detail.other}</p>
+          <RowPreview rows={detail.onlyInOther} />
+        </div>
+      )}
+      {changedRows.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-semibold">Same row, different values</p>
+          <DataTable
+            maxHeight={280}
+            rows={changedRows}
+            columns={[
+              { key: "key", label: "Row", render: (r) => <span className="font-medium">{r.key}</span> },
+              { key: "column", label: "Column" },
+              { key: "current", label: detail.current, render: (r) => showValue(r.current) },
+              { key: "other", label: detail.other, render: (r) => showValue(r.other) },
+            ]}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RowPreview({ rows }: { rows: Array<{ key: string; fields: Record<string, unknown> }> }) {
+  const flat = rows.map((row) => ({ key: row.key, ...(row.fields ?? {}) }));
+  const fieldNames = [...new Set(flat.flatMap((row) => Object.keys(row).filter((key) => key !== "key")))];
+  return (
+    <DataTable
+      maxHeight={220}
+      rows={flat}
+      columns={[
+        { key: "key", label: "Row", render: (r) => <span className="font-medium">{r.key}</span> },
+        ...fieldNames.map((name) => ({ key: name, label: name, render: (r: any) => showValue(r[name]) })),
+      ]}
+    />
+  );
+}
+
+function showValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
+}
+
 export default function DbPanel({
   data,
   vm,
   latencyHistory,
   period,
   isLive,
+  fetcher,
 }: {
   data: any;
   vm: any;
   latencyHistory: Array<{ t: string; ms: number }>;
   period: string;
   isLive: boolean;
+  fetcher?: Fetcher;
 }) {
   const [tableSort, setTableSort] = useState<"size" | "rows" | "name">("size");
+  const [diffTable, setDiffTable] = useState<string | null>(null);
+  const [diffDetail, setDiffDetail] = useState<any>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
 
   const server = ok<any>(data?.server);
   const latency = ok<any>(data?.latency);
@@ -137,6 +218,24 @@ export default function DbPanel({
       })
       .sort((x, y) => Math.abs(y.diff ?? 1e9) - Math.abs(x.diff ?? 1e9));
   }, [compare, tables]);
+
+  const openDifference = async (name: string) => {
+    if (!fetcher) return;
+    setDiffTable(name);
+    setDiffDetail(null);
+    setDiffError(null);
+    setDiffLoading(true);
+    try {
+      const res = await fetcher(`/api/admin/monitor/db-diff?table=${encodeURIComponent(name)}`, { cache: "no-store" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not load this difference");
+      setDiffDetail(body);
+    } catch (err) {
+      setDiffError(err instanceof Error ? err.message : "Could not load this difference");
+    } finally {
+      setDiffLoading(false);
+    }
+  };
 
   const appDbErrors: string[] = (vm?.snapshot?.app?.recentLog ?? []).filter((l: string) => DB_ERROR_RE.test(l));
   const syncJobs: any[] = vm?.snapshot?.timers ?? [];
@@ -381,12 +480,14 @@ export default function DbPanel({
         </Panel>
 
         {compare && (
-          <Panel title={`${server?.currentDb} vs ${compare.database}`} icon={Layers} subtitle="Row counts per table. The Supabase sync keeps the second database as a mirror; the app writes only to the first.">
+          <Panel title={`${server?.currentDb} vs ${compare.database}`} icon={Layers} subtitle="Click a table to see the exact rows and columns that differ.">
             <DataTable
               maxHeight={340}
               rows={compareRows}
+              onRowClick={(row) => void openDifference(row.name)}
+              rowClassName={(row) => (row.name === diffTable ? "bg-primary/10" : "")}
               columns={[
-                { key: "name", label: "Table" },
+                { key: "name", label: "Table", render: (r) => <span className="font-medium">{r.name}</span> },
                 { key: "mine", label: server?.currentDb ?? "This DB", align: "right", render: (r) => fmtNum(r.mine) },
                 { key: "other", label: compare.database, align: "right", render: (r) => fmtNum(r.other) },
                 {
@@ -398,6 +499,17 @@ export default function DbPanel({
                 },
               ]}
             />
+            {diffTable && (
+              <div className="mt-4 space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold">{diffTable}</p>
+                  <button type="button" onClick={() => { setDiffTable(null); setDiffDetail(null); setDiffError(null); }} className="text-xs font-semibold text-muted-foreground hover:text-foreground">Close</button>
+                </div>
+                {diffLoading && <p className="text-xs text-muted-foreground">Reading both databases…</p>}
+                {diffError && <p className="text-xs text-rose-500">{diffError}</p>}
+                {diffDetail && <DifferenceDetail detail={diffDetail} />}
+              </div>
+            )}
           </Panel>
         )}
 

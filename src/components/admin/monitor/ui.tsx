@@ -287,11 +287,15 @@ export function DataTable<T extends Record<string, any>>({
   rows,
   empty = "Nothing to show",
   maxHeight = 360,
+  onRowClick,
+  rowClassName,
 }: {
   columns: Column<T>[];
   rows: T[] | null | undefined;
   empty?: string;
   maxHeight?: number;
+  onRowClick?: (row: T) => void;
+  rowClassName?: (row: T) => string;
 }) {
   if (!rows || rows.length === 0) return <p className="text-sm text-muted-foreground py-2">{empty}</p>;
   return (
@@ -311,7 +315,11 @@ export function DataTable<T extends Record<string, any>>({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="border-t border-border/40 hover:bg-muted/40">
+            <tr
+              key={i}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              className={`border-t border-border/40 hover:bg-muted/40 ${onRowClick ? "cursor-pointer" : ""} ${rowClassName ? rowClassName(row) : ""}`}
+            >
               {columns.map((c) => (
                 <td key={c.key} className={`px-3 py-1.5 align-top ${ALIGN[c.align ?? "left"]} ${c.className ?? ""}`}>
                   {c.render ? c.render(row) : row[c.key] === null || row[c.key] === undefined ? "—" : String(row[c.key])}

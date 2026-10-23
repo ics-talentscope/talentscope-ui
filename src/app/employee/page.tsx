@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
@@ -10,24 +10,17 @@ import {
   ArrowUpRight,
   AudioLines,
   BadgeCheck,
-  Bot,
   Building2,
   BriefcaseBusiness,
   FileText,
   Key,
   LockKeyhole,
   MessageCircle,
-  Mic,
-  MicOff,
-  Network,
-  Paperclip,
   Quote,
-  Send,
   ShieldCheck,
   Sparkles,
   Video,
   UserRound,
-  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -84,95 +77,6 @@ const floatingWalkers = Array.from({ length: 18 }, (_, index) => {
   };
 });
 
-type AssistantMessage = { role: "assistant" | "user"; text: string };
-type AssistantLanguage = "en" | "es" | "fr" | "hi" | "de" | "pt" | "zh" | "ja";
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-const assistantGreetings: Record<AssistantLanguage, string> = {
-  en: "Hi, I’m Buddy Bot. I can help you choose a sign-in option or reset your portal password.",
-  es: "Hola, soy Buddy Bot. Puedo ayudarte a elegir cómo iniciar sesión o restablecer tu contraseña.",
-  fr: "Bonjour, je suis Buddy Bot. Je peux vous aider à choisir une méthode de connexion ou à réinitialiser votre mot de passe.",
-  hi: "नमस्ते, मैं Buddy Bot हूँ। मैं साइन-इन विकल्प चुनने या पासवर्ड रीसेट करने में मदद कर सकता हूँ।",
-  de: "Hallo, ich bin Buddy Bot. Ich helfe dir bei der Anmeldung oder beim Zurücksetzen deines Passworts.",
-  pt: "Olá, sou o Buddy Bot. Posso ajudar você a escolher uma forma de entrar ou redefinir sua senha.",
-  zh: "你好，我是 Buddy Bot。我可以帮你选择登录方式或重置门户密码。",
-  ja: "こんにちは、Buddy Botです。サインイン方法の選択やパスワードのリセットをお手伝いします。",
-};
-
-const assistantReplies: Record<AssistantLanguage, { sso: string; password: string; login: string; default: string }> = {
-  en: {
-    sso: "Choose Infinite Login to continue through your organization’s secure sign-on. If it fails, try again or contact your IT support team.",
-    password: "Choose Non-SSO Sign in, then select Forgot Password? on the login form to reset your portal password.",
-    login: "Use Non-SSO Sign in for your employee ID and password, or Infinite Login for organization SSO.",
-    default: "I can help with Infinite Login, employee ID sign-in, or password resets. Which one do you need?",
-  },
-  es: {
-    sso: "Elige Infinite Login para continuar con el acceso seguro de tu organización. Si falla, inténtalo de nuevo o contacta con soporte técnico.",
-    password: "Elige Non-SSO Sign in y selecciona «¿Olvidaste tu contraseña?» para restablecerla.",
-    login: "Usa Non-SSO Sign in con tu ID y contraseña, o Infinite Login para el acceso SSO de tu organización.",
-    default: "Puedo ayudarte con Infinite Login, el acceso con ID de empleado o el restablecimiento de contraseña. ¿Qué necesitas?",
-  },
-  fr: {
-    sso: "Choisissez Infinite Login pour utiliser l’accès sécurisé de votre organisation. En cas d’échec, réessayez ou contactez le support informatique.",
-    password: "Choisissez Non-SSO Sign in, puis sélectionnez « Mot de passe oublié ? » pour réinitialiser votre mot de passe.",
-    login: "Utilisez Non-SSO Sign in avec votre identifiant et votre mot de passe, ou Infinite Login pour le SSO.",
-    default: "Je peux vous aider avec Infinite Login, la connexion par identifiant ou la réinitialisation du mot de passe. De quoi avez-vous besoin ?",
-  },
-  hi: {
-    sso: "अपने संगठन के सुरक्षित साइन-ऑन के लिए Infinite Login चुनें। समस्या होने पर फिर कोशिश करें या IT सहायता से संपर्क करें।",
-    password: "Non-SSO Sign in चुनें और पासवर्ड रीसेट करने के लिए लॉगिन फ़ॉर्म पर Forgot Password? चुनें।",
-    login: "कर्मचारी ID और पासवर्ड के लिए Non-SSO Sign in, या संगठन SSO के लिए Infinite Login चुनें।",
-    default: "मैं Infinite Login, कर्मचारी ID साइन-इन या पासवर्ड रीसेट में मदद कर सकता हूँ। आपको किसमें मदद चाहिए?",
-  },
-  de: {
-    sso: "Wähle Infinite Login für die sichere Anmeldung deiner Organisation. Falls es nicht funktioniert, versuche es erneut oder wende dich an den IT-Support.",
-    password: "Wähle Non-SSO Sign in und dann „Passwort vergessen?“, um dein Portalpasswort zurückzusetzen.",
-    login: "Nutze Non-SSO Sign in mit Mitarbeiter-ID und Passwort oder Infinite Login für das SSO deiner Organisation.",
-    default: "Ich helfe bei Infinite Login, der Anmeldung mit Mitarbeiter-ID oder beim Zurücksetzen des Passworts. Wobei brauchst du Hilfe?",
-  },
-  pt: {
-    sso: "Escolha Infinite Login para acessar com segurança pela sua organização. Se não funcionar, tente novamente ou fale com o suporte de TI.",
-    password: "Escolha Non-SSO Sign in e selecione “Esqueceu a senha?” para redefinir sua senha do portal.",
-    login: "Use Non-SSO Sign in com seu ID e senha, ou Infinite Login para o SSO da organização.",
-    default: "Posso ajudar com Infinite Login, acesso pelo ID de funcionário ou redefinição de senha. Do que você precisa?",
-  },
-  zh: {
-    sso: "选择 Infinite Login，通过组织的安全登录方式继续。如果失败，请重试或联系 IT 支持。",
-    password: "选择 Non-SSO Sign in，然后在登录表单中选择“忘记密码？”来重置门户密码。",
-    login: "使用 Non-SSO Sign in 输入员工 ID 和密码，或使用 Infinite Login 进行组织 SSO 登录。",
-    default: "我可以协助 Infinite Login、员工 ID 登录或重置密码。你需要哪方面的帮助？",
-  },
-  ja: {
-    sso: "組織の安全なサインインを利用するには Infinite Login を選択してください。失敗する場合は再試行するか、IT サポートにお問い合わせください。",
-    password: "Non-SSO Sign in を選び、ログインフォームの「パスワードをお忘れですか？」からリセットしてください。",
-    login: "社員 ID とパスワードには Non-SSO Sign in、組織の SSO には Infinite Login をご利用ください。",
-    default: "Infinite Login、社員 ID でのサインイン、パスワードのリセットをお手伝いできます。どのようなご用件ですか？",
-  },
-};
-
-function getAssistantReply(message: string, language: AssistantLanguage): string {
-  const normalized = message.toLowerCase();
-  const replies = assistantReplies[language];
-  if (normalized.includes("sso") || normalized.includes("infinite")) {
-    return replies.sso;
-  }
-  if (normalized.includes("password") || normalized.includes("reset")) {
-    return replies.password;
-  }
-  if (normalized.includes("id") || normalized.includes("sign in") || normalized.includes("login")) {
-    return replies.login;
-  }
-  return replies.default;
-}
-
 export default function EmployeeLoginPage() {
   const router = useRouter();
   const prefersReducedMotion = useReducedMotion();
@@ -202,16 +106,6 @@ export default function EmployeeLoginPage() {
   const [welcomeColorIndex, setWelcomeColorIndex] = useState(0);
   const [showMotivationalQuote, setShowMotivationalQuote] = useState(false);
   const [motivationalQuoteIndex, setMotivationalQuoteIndex] = useState(-1);
-  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
-  const [assistantInput, setAssistantInput] = useState("");
-  const [assistantLanguage, setAssistantLanguage] = useState<AssistantLanguage>("en");
-  const [isListening, setIsListening] = useState(false);
-  const [assistantNotice, setAssistantNotice] = useState("");
-  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const attachmentInputRef = useRef<HTMLInputElement>(null);
-  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
-    { role: "assistant", text: assistantGreetings.en },
-  ]);
 
   useEffect(() => {
     if (!showWelcome) return;
@@ -238,93 +132,6 @@ export default function EmployeeLoginPage() {
       if (hideTimer) window.clearTimeout(hideTimer);
     };
   }, [showWelcome]);
-
-  const handleAssistantSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const question = assistantInput.trim();
-    if (!question) return;
-    setAssistantMessages((messages) => [
-      ...messages,
-      { role: "user", text: question },
-      { role: "assistant", text: getAssistantReply(question, assistantLanguage) },
-    ]);
-    setAssistantInput("");
-  };
-
-  const handleAssistantLanguageChange = (language: AssistantLanguage) => {
-    setAssistantLanguage(language);
-    setAssistantMessages((messages) => {
-      const firstAssistantIndex = messages.findIndex((message) => message.role === "assistant");
-      if (firstAssistantIndex < 0) return [{ role: "assistant", text: assistantGreetings[language] }];
-      return messages.map((message, index) =>
-        index === firstAssistantIndex ? { ...message, text: assistantGreetings[language] } : message
-      );
-    });
-  };
-
-  const handleAssistantMic = () => {
-    if (isListening) {
-      speechRecognitionRef.current?.stop();
-      return;
-    }
-    const speechWindow = window as Window & {
-      SpeechRecognition?: new () => SpeechRecognitionLike;
-      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-    };
-    const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-    if (!Recognition) {
-      setAssistantNotice("Voice input is not supported in this browser.");
-      return;
-    }
-    const recognition = new Recognition();
-    recognition.lang = {
-      en: "en-US",
-      es: "es-ES",
-      fr: "fr-FR",
-      hi: "hi-IN",
-      de: "de-DE",
-      pt: "pt-BR",
-      zh: "zh-CN",
-      ja: "ja-JP",
-    }[assistantLanguage];
-    recognition.interimResults = false;
-    recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript?.trim();
-      if (transcript) setAssistantInput((current) => [current, transcript].filter(Boolean).join(" "));
-    };
-    recognition.onerror = () => setAssistantNotice("Could not capture voice input. Check microphone access and try again.");
-    recognition.onend = () => {
-      setIsListening(false);
-      speechRecognitionRef.current = null;
-    };
-    speechRecognitionRef.current = recognition;
-    setAssistantNotice("");
-    setIsListening(true);
-    recognition.start();
-  };
-
-  const handleAssistantAttachment = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    let detail = `Attached ${file.name} (${Math.ceil(file.size / 1024)} KB).`;
-    if (file.size > 1_000_000) {
-      detail += " It is over 1 MB, so Buddy Bot only received its file name.";
-    } else if (file.type.startsWith("text/") || /\.(txt|md|csv|json)$/i.test(file.name)) {
-      const content = (await file.text()).trim().slice(0, 1200);
-      if (content) detail += ` File text: ${content}`;
-    } else {
-      detail += " You can ask Buddy Bot about sign-in help related to this file.";
-    }
-    setAssistantMessages((messages) => [
-      ...messages,
-      { role: "user", text: detail },
-      { role: "assistant", text: getAssistantReply(`${file.name} ${assistantInput}`, assistantLanguage) },
-    ]);
-    setAssistantNotice("");
-  };
-
-  useEffect(() => () => speechRecognitionRef.current?.stop(), []);
 
   const [ssoEnabled, setSsoEnabled] = useState(false);
 
@@ -557,7 +364,7 @@ export default function EmployeeLoginPage() {
   };
 
   return showWelcome ? (
-    <main className="relative min-h-screen overflow-hidden bg-background text-foreground transition-colors duration-300">
+    <main className="relative h-dvh overflow-hidden bg-background text-foreground transition-colors duration-300">
       <div className="absolute inset-0 pointer-events-none opacity-60" aria-hidden="true">
         <motion.div
           className="absolute inset-0 bg-[linear-gradient(rgb(var(--foreground)_/_0.035)_1px,transparent_1px),linear-gradient(90deg,rgb(var(--foreground)_/_0.035)_1px,transparent_1px)] bg-[size:44px_44px]"
@@ -773,7 +580,7 @@ export default function EmployeeLoginPage() {
         ))}
       </div>
 
-      <header className="relative z-30 flex h-20 items-center justify-between px-5 sm:px-8 lg:px-12">
+      <header className="relative z-30 flex h-14 shrink-0 items-center justify-between px-5 sm:h-16 sm:px-8 lg:px-12">
         <Link href="/" className="group inline-flex items-center gap-3" aria-label="TalentScope home">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#176b55] text-white shadow-lg shadow-[#176b55]/20">
             <ShieldCheck className="h-5 w-5" />
@@ -815,8 +622,8 @@ export default function EmployeeLoginPage() {
         </div>
       </header>
 
-      <div className="relative z-10 mx-auto grid min-h-[calc(100vh-5rem)] max-w-[1440px] grid-cols-1 items-center gap-12 px-5 pb-12 pt-4 sm:px-8 lg:grid-cols-[1.1fr_0.9fr] lg:gap-16 lg:px-16 lg:pb-20">
-        <section className="relative flex min-h-[580px] flex-col justify-start gap-8 overflow-hidden rounded-[2rem] bg-[#176b55] px-7 py-9 text-white shadow-2xl shadow-[#176b55]/20 transition-colors duration-300 sm:px-10 sm:py-11 lg:min-h-[620px] lg:gap-10 lg:px-14 lg:py-12">
+      <div className="relative z-10 mx-auto grid h-[calc(100dvh-3.5rem)] max-w-[1440px] grid-cols-1 grid-rows-[minmax(0,0.9fr)_minmax(0,1.1fr)] items-stretch gap-3 overflow-hidden px-4 pb-3 pt-1 sm:h-[calc(100dvh-4rem)] sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:grid-rows-1 lg:gap-8 lg:px-10 lg:pb-4 lg:pt-2">
+        <section className="relative flex h-full min-h-0 flex-col justify-start gap-4 overflow-hidden rounded-[1.5rem] bg-[#176b55] px-6 py-5 text-white shadow-2xl shadow-[#176b55]/20 transition-colors duration-300 sm:gap-5 sm:rounded-[2rem] sm:px-8 sm:py-7 lg:gap-6 lg:px-10 lg:py-8">
           <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_16%_10%,rgba(255,255,255,0.18),transparent_42%),radial-gradient(ellipse_at_92%_88%,rgba(8,44,35,0.2),transparent_40%)]" />
             <div className="absolute -right-24 top-16 h-72 w-72 rounded-full border border-white/10" />
@@ -856,24 +663,6 @@ export default function EmployeeLoginPage() {
                 Talent interview
               </div>
             </motion.div>
-
-            <motion.div
-              className="absolute right-[5%] top-[66%] flex max-w-[170px] items-start gap-2 rounded-2xl rounded-br-sm border border-white/35 bg-white/95 px-2.5 py-2 text-[#315044] shadow-[0_14px_28px_rgba(2,32,23,0.22)] sm:top-[62%]"
-              animate={prefersReducedMotion ? undefined : { x: [0, -12, -5, 0], y: [0, 8, 17, 0], rotate: [0, -1, 1, 0] }}
-              transition={prefersReducedMotion ? undefined : { duration: 8, repeat: Infinity, ease: "easeInOut", delay: 0.8 }}
-            >
-              <MessageCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#368368]" />
-              <span className="text-[10px] font-semibold leading-4">Tell me about a challenge you solved.</span>
-            </motion.div>
-
-            <motion.div
-              className="absolute bottom-[10%] right-[5%] flex items-center gap-2 rounded-full border border-white/20 bg-[#0e4e3e]/90 px-2.5 py-1.5 text-[9px] font-semibold text-white shadow-lg"
-              animate={prefersReducedMotion ? undefined : { x: [0, -15, -7, 0], y: [0, -8, -15, 0] }}
-              transition={prefersReducedMotion ? undefined : { duration: 7.5, repeat: Infinity, ease: "easeInOut", delay: 1.4 }}
-            >
-              <span className="h-2 w-2 rounded-full bg-[#a8e5bd] shadow-[0_0_10px_rgba(168,229,189,0.85)]" />
-              Conversation in progress
-            </motion.div>
           </div>
 
           <div className="relative z-10 flex items-center gap-3">
@@ -894,33 +683,32 @@ export default function EmployeeLoginPage() {
             transition={{ duration: 0.65, ease: "easeOut" }}
           >
             <motion.h1
-              className="max-w-[12ch] text-5xl font-semibold leading-[1.02] tracking-[-0.045em] sm:text-6xl lg:text-7xl"
+              className="max-w-[12ch] text-4xl font-semibold leading-[1.02] tracking-[-0.045em] sm:text-5xl lg:text-6xl"
               animate={{ color: welcomeTitleColors[welcomeColorIndex] }}
               transition={{ duration: prefersReducedMotion ? 0 : 1.2, ease: "easeInOut" }}
             >
               Welcome to TalentScope
             </motion.h1>
-            <p className="mt-6 max-w-md text-base leading-7 text-white/75 sm:text-lg sm:leading-8">
+            <p className="mt-3 max-w-md text-sm leading-6 text-white/75 sm:mt-4 sm:text-base sm:leading-7">
               A clearer view of your skills, your progress, and the opportunities ahead.
             </p>
           </motion.div>
 
         </section>
 
-        <section className="mx-auto w-full max-w-[520px] py-4 lg:ml-0 lg:py-10">
-          <div className="mb-10">
-            <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.18em] text-primary">Employee portal</p>
-            <h2 className="font-display text-3xl font-extrabold leading-[1.08] text-foreground sm:text-4xl">
+        <section className="relative mx-auto flex h-full min-h-0 w-full max-w-[520px] flex-col justify-center overflow-hidden py-1 lg:ml-0 lg:py-2">
+          <div className="mb-4 shrink-0 lg:mb-6">
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-primary">Employee portal</p>
+            <h2 className="font-display text-2xl font-extrabold leading-[1.08] text-foreground sm:text-3xl">
               Choose how you
               <span className="mt-1 block text-primary">sign in</span>
             </h2>
             <p className="mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-              Continue with your Infinite account or use your employee credentials.
+              Sign in with Microsoft, or use your Employee ID and password.
             </p>
           </div>
 
-          <div className="relative flex w-full items-center justify-between gap-3">
-          <div className="min-w-0 w-[calc(100%-96px)] max-w-[300px] space-y-3">
+          <div className="w-full max-w-[360px] shrink-0 space-y-3">
             <motion.button
               type="button"
               onClick={handleInfiniteLogin}
@@ -935,11 +723,11 @@ export default function EmployeeLoginPage() {
                 animate={prefersReducedMotion ? undefined : { y: [0, -4, 0] }}
                 transition={prefersReducedMotion ? undefined : { duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
               >
-                <Network className="h-5 w-5" />
+                <img src="/infinite-logo.jpg" alt="" className="h-9 w-9 object-contain" />
               </motion.span>
               <span className="min-w-0 flex-1">
                 <span className="block text-base font-bold">Infinite Login</span>
-                <span className="mt-1 block text-xs text-[#785c68]">Secure single sign-on</span>
+                <span className="mt-1 block text-xs text-[#785c68]">Sign in with your Microsoft account</span>
               </span>
               <ArrowUpRight className="h-5 w-5 shrink-0 text-[#a16c80] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             </motion.button>
@@ -961,127 +749,14 @@ export default function EmployeeLoginPage() {
                 <LockKeyhole className="h-5 w-5" />
               </motion.span>
               <span className="min-w-0 flex-1">
-                <span className="block text-base font-bold">Non-SSO Sign in</span>
-                <span className="mt-1 block text-xs text-[#716382]">Use your ID and password</span>
+                <span className="block text-base font-bold">Employee ID and password</span>
+                <span className="mt-1 block text-xs text-[#716382]">Sign in with your Employee ID and password</span>
               </span>
               <ArrowRight className="h-5 w-5 shrink-0 text-[#8062a4] transition-transform group-hover:translate-x-1" />
             </motion.button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsAssistantOpen((open) => !open)}
-            aria-label={isAssistantOpen ? "Close Buddy Bot" : "Open Buddy Bot"}
-            aria-expanded={isAssistantOpen}
-            className="inline-flex min-h-[92px] w-[78px] shrink-0 flex-col items-center justify-center gap-1.5 rounded-2xl border border-[#b8d8c9] bg-white px-2 py-3 text-[#176b55] shadow-[0_14px_30px_-12px_rgba(23,107,85,0.42)] transition hover:-translate-y-1 hover:bg-[#edf6f0] hover:shadow-[0_18px_34px_-12px_rgba(23,107,85,0.5)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#176b55]/25"
-            title="Buddy Bot sign-in help"
-          >
-            <span className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#176b55] to-[#7860b2] text-white shadow-md shadow-[#176b55]/20">
-              {isAssistantOpen ? <X className="h-5 w-5" /> : <Bot className="h-6 w-6" />}
-              {!isAssistantOpen && <Sparkles className="absolute -right-1 -top-1 h-3.5 w-3.5 rounded-full bg-white p-0.5 text-[#a56bcb] shadow-sm" />}
-            </span>
-            <span className="text-xs font-bold">Buddy Bot</span>
-            <span className="text-[9px] text-[#70887b]">Sign-in help</span>
-          </button>
-
-          {isAssistantOpen && (
-            <motion.section
-              aria-label="Buddy Bot chat"
-              initial={prefersReducedMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              className="absolute right-0 top-full z-40 mt-3 flex w-[min(320px,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl"
-            >
-              <div className="flex items-center gap-3 bg-[#176b55] px-4 py-3 text-white">
-                <span className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-white/25 to-[#c5a9fa]/40">
-                  <Bot className="h-5 w-5" />
-                  <Sparkles className="absolute -right-1 -top-1 h-3.5 w-3.5 rounded-full bg-white p-0.5 text-[#8154c8] shadow-sm" />
-                </span>
-                <div>
-                  <p className="text-sm font-bold">Buddy Bot</p>
-                  <p className="text-[10px] text-white/75">Sign-in help</p>
-                </div>
-                <label className="ml-auto flex items-center gap-1.5 rounded-lg border border-white/25 bg-white/10 px-2 py-1.5 text-[10px] font-semibold text-white">
-                  <span className="sr-only">Choose Buddy Bot language</span>
-                  <select
-                    aria-label="Choose Buddy Bot language"
-                    value={assistantLanguage}
-                    onChange={(event) => handleAssistantLanguageChange(event.target.value as AssistantLanguage)}
-                    className="max-w-[112px] cursor-pointer bg-transparent text-white outline-none [&>option]:text-[#24352e]"
-                  >
-                    <option value="en">English</option>
-                    <option value="es">Español</option>
-                    <option value="fr">Français</option>
-                    <option value="hi">हिन्दी</option>
-                    <option value="de">Deutsch</option>
-                    <option value="pt">Português</option>
-                    <option value="zh">中文</option>
-                    <option value="ja">日本語</option>
-                  </select>
-                </label>
-              </div>
-              <input
-                ref={attachmentInputRef}
-                type="file"
-                accept=".txt,.md,.csv,.json,.pdf,image/*"
-                className="hidden"
-                onChange={handleAssistantAttachment}
-                aria-label="Attach a file to Buddy Bot"
-              />
-              <div role="log" aria-live="polite" className="flex max-h-56 flex-col gap-2 overflow-y-auto p-3">
-                {assistantMessages.map((message, index) => (
-                  <p
-                    key={`${message.role}-${index}`}
-                    className={`max-w-[88%] rounded-xl px-3 py-2 text-xs leading-5 ${
-                      message.role === "user"
-                        ? "self-end rounded-br-sm bg-[#e7eef2] text-[#344252]"
-                        : "self-start rounded-bl-sm bg-[#edf5ef] text-[#315044]"
-                    }`}
-                  >
-                    {message.text}
-                  </p>
-                ))}
-              </div>
-              {assistantNotice && <p role="status" className="px-3 pb-2 text-[10px] leading-4 text-muted-foreground">{assistantNotice}</p>}
-              <form onSubmit={handleAssistantSubmit} className="flex items-center gap-1.5 border-t border-border p-3">
-                <button
-                  type="button"
-                  onClick={() => attachmentInputRef.current?.click()}
-                  aria-label="Attach a file"
-                  title="Attach a file"
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#176b55]/30"
-                >
-                  <Paperclip className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAssistantMic}
-                  aria-label={isListening ? "Stop voice input" : "Start voice input"}
-                  title={isListening ? "Stop voice input" : "Voice input"}
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#176b55]/30 ${isListening ? "bg-rose-100 text-rose-700" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
-                >
-                  {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                </button>
-                <input
-                  value={assistantInput}
-                  onChange={(event) => setAssistantInput(event.target.value)}
-                  aria-label="Message Buddy Bot"
-                  placeholder="Ask about signing in..."
-                  className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-[#176b55]/50 focus:ring-2 focus:ring-[#176b55]/15"
-                />
-                <button
-                  type="submit"
-                  aria-label="Send message"
-                  disabled={!assistantInput.trim()}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#176b55] text-white transition hover:bg-[#125943] disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </form>
-            </motion.section>
-          )}
-          </div>
-
-          <div className="mt-8 flex items-start gap-3 border-t border-border pt-6 text-xs leading-5 text-muted-foreground">
+          <div className="mt-4 flex shrink-0 items-start gap-3 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">
             <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
               <Building2 className="h-3.5 w-3.5" />
             </span>
@@ -1125,14 +800,14 @@ export default function EmployeeLoginPage() {
           <h1 className="text-2xl font-bold tracking-tight text-foreground leading-tight">
             {isResetPassword
               ? "Reset Portal Password"
-              : org
-                ? `${org} · TalentScope`
-                : "TalentScope Login"}
+              : "Employee ID and password"}
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
             {isResetPassword 
-              ? "Verify your Employee ID and Email to set a new password." 
-              : `Access your TalentScope assessments, performance analytics, and growth path.`}
+              ? "Verify your Employee ID and email to set a new password." 
+              : org
+                ? `Sign in to ${org} with your Employee ID and password.`
+                : "Sign in with your Employee ID and password."}
           </p>
         </div>
 

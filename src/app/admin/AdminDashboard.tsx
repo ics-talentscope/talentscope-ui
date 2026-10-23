@@ -1321,9 +1321,7 @@ export default function AdminDashboard() {
   const [systemLogsTotal, setSystemLogsTotal] = useState(0);
   const closeMonitor = useCallback(() => setShowMonitor(false), []);
   const [defaultDuration, setDefaultDuration] = useState(15);
-  const [defaultDurationDraft, setDefaultDurationDraft] = useState("15");
   const [inviteDuration, setInviteDuration] = useState(15);
-  const [isSavingDuration, setIsSavingDuration] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1334,7 +1332,6 @@ export default function AdminDashboard() {
         const data = await res.json();
         if (cancelled || typeof data.durationMinutes !== "number") return;
         setDefaultDuration(data.durationMinutes);
-        setDefaultDurationDraft(String(data.durationMinutes));
         setInviteDuration(data.durationMinutes);
       } catch {}
     })();
@@ -1342,31 +1339,6 @@ export default function AdminDashboard() {
       cancelled = true;
     };
   }, []);
-
-  const handleSaveDefaultDuration = async () => {
-    const minutes = Math.max(5, Math.min(180, parseInt(defaultDurationDraft) || 0));
-    if (!minutes) return;
-    setIsSavingDuration(true);
-    try {
-      const res = await adminFetch("/api/admin/interview_defaults", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ durationMinutes: minutes, adminEmail }),
-      });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "Failed to update interview duration.");
-      setDefaultDuration(result.durationMinutes);
-      setDefaultDurationDraft(String(result.durationMinutes));
-      setInviteDuration(result.durationMinutes);
-      setActionSuccess(`Default interview duration set to ${result.durationMinutes} minutes.`);
-      setTimeout(() => setActionSuccess(null), 3000);
-    } catch (err: any) {
-      setActionError(err.message || "Failed to update interview duration.");
-      setTimeout(() => setActionError(null), 5000);
-    } finally {
-      setIsSavingDuration(false);
-    }
-  };
 
   // Logs state
   const [systemLogs, setSystemLogs] = useState<any[]>([]);
@@ -2862,6 +2834,7 @@ export default function AdminDashboard() {
     } catch (err: any) {
       setPipelineStatus("Ingestion: Error");
       setActivityLogs(prev => [`[${new Date().toLocaleTimeString()}] Scan & refresh for ${type} failed: ${err.message}`, ...prev]);
+      void loadLogs();
       setActionError(`Scan & refresh of ${type} failed: ${err.message}`);
       setTimeout(() => setActionError(null), 5000);
     } finally {
@@ -8059,8 +8032,19 @@ export default function AdminDashboard() {
                       ? "Idle"
                       : "Scanning"}
                 </Badge>
+                <span className="max-w-[180px] text-right text-[9px] font-semibold leading-snug text-slate-400" title={pipelineStatus}>
+                  {pipelineStatus}
+                </span>
               </div>
             </div>
+
+            {activityLogs.length > 0 && (
+              <div className="mb-3 max-h-24 overflow-y-auto rounded-xl bg-slate-950 px-3 py-2 font-mono text-[10px] leading-4 text-slate-300">
+                {activityLogs.slice(0, 6).map((line, index) => (
+                  <div key={`${line}-${index}`}>{line}</div>
+                ))}
+              </div>
+            )}
 
             <div className="space-y-4 flex-1 flex flex-col">
               {jds.length > 0 && (
@@ -8427,32 +8411,6 @@ export default function AdminDashboard() {
                   MANAGE
                 </Button>
               </div>
-
-              <div className="flex items-center justify-between gap-3 p-3 border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/30 rounded-xl">
-                <div className="space-y-0.5 min-w-0">
-                  <div className="text-xs font-bold text-foreground">Interview Duration</div>
-                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Default minutes for candidate interviews (5-180)</div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <input
-                    type="number"
-                    min={5}
-                    max={180}
-                    value={defaultDurationDraft}
-                    onChange={(e) => setDefaultDurationDraft(e.target.value)}
-                    className="w-16 rounded-lg border border-border bg-card px-2 py-1 text-xs font-bold text-slate-905 dark:text-slate-100 outline-none focus:border-indigo-500"
-                    aria-label="Default interview duration in minutes"
-                  />
-                  <Button
-                    onClick={handleSaveDefaultDuration}
-                    disabled={isSavingDuration || String(defaultDuration) === defaultDurationDraft}
-                    size="sm"
-                    className="h-7 px-3 text-[10px] font-black rounded-lg"
-                  >
-                    {isSavingDuration ? "SAVING" : "SAVE"}
-                  </Button>
-                </div>
-              </div>
             </div>
           </Card>
           )}
@@ -8473,7 +8431,7 @@ export default function AdminDashboard() {
               <div>
                 <h3 className="text-sm font-black text-slate-855 dark:text-slate-100 leading-none">System Logs & Ingestion Pipeline Viewer</h3>
                 <p className="text-[10px] text-slate-400 font-semibold mt-1">
-                  Who did what: admin and employee logins, admin actions, employee tests, candidate interviews and automatic jobs
+                  Sign-ins, admin actions, employee tests, candidate interviews, emails, and ingestion scans. Use Ingestion pipeline to see folder scans and uploads.
                   {systemLogsTotal > systemLogs.length ? ` · showing the newest ${systemLogs.length} of ${systemLogsTotal}` : ""}
                 </p>
               </div>
@@ -8524,6 +8482,9 @@ export default function AdminDashboard() {
                   <option value="employee">👥 Employee Pool</option>
                   <option value="interview">📝 Interviews Sync</option>
                   <option value="email">✉️ Emails outbox</option>
+                  <option value="ingestion">📥 Ingestion pipeline</option>
+                  <option value="auth">🔐 Sign-in</option>
+                  <option value="audit">🛡️ Admin actions</option>
                   <option value="error">⚠️ System Errors</option>
                 </select>
 
@@ -8551,14 +8512,17 @@ export default function AdminDashboard() {
               ) : (
                 <div className="overflow-y-auto max-h-[350px] space-y-2 pr-1 scrollbar-thin scrollbar-thumb-slate-800">
                   {systemLogs.map((log, idx) => {
-                    const isError = log.status.toLowerCase() === 'failed' || log.status.toLowerCase() === 'error';
-                    const isWarning = log.status.toLowerCase() === 'warning';
+                    const status = String(log.status || "success").toLowerCase();
+                    const isError = status === "failed" || status === "error";
+                    const isWarning = status === "warning";
+                    const when = log.timestamp ? new Date(log.timestamp) : null;
+                    const whenLabel = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "time not recorded";
 
                     return (
-                      <div key={idx} className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 gap-1.5 sm:gap-4 hover:bg-slate-900/20 px-1 py-0.5 rounded transition-all">
+                      <div key={`${log.timestamp}-${log.action}-${idx}`} className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 gap-1.5 sm:gap-4 hover:bg-slate-900/20 px-1 py-0.5 rounded transition-all">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-slate-650 font-bold shrink-0">
-                            [{new Date(log.timestamp).toLocaleString()}]
+                            [{whenLabel}]
                           </span>
                           <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shrink-0 ${
                             isError ? "bg-red-955/65 text-red-400 border border-red-900/50" :

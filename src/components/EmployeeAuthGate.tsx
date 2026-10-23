@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
-import { LogOut, BookOpen, Sparkles, ShieldAlert, BarChart3, KeyRound } from "lucide-react";
+import { LogOut, BookOpen, Sparkles, ShieldAlert, BarChart3, KeyRound, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CenteredPageLoading } from "@/components/ui/skeleton";
@@ -11,6 +11,117 @@ import { PasswordInput } from "@/components/ui/password-input";
 
 const passwordInputClass =
   "w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium outline-none focus:border-indigo-500 transition-all";
+
+const profileInputClass =
+  "w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium outline-none focus:border-indigo-500 transition-all";
+
+function EditProfileDialog({
+  initialName,
+  employeeId,
+  onClose,
+  onSaved,
+}: {
+  initialName: string;
+  employeeId: string;
+  onClose: () => void;
+  onSaved: (profile: { employee_id: string; full_name: string }) => void;
+}) {
+  const [fullName, setFullName] = useState(initialName);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    const name = fullName.trim();
+    if (!name) {
+      setError("Name is required.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/employee/auth/profile", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${window.localStorage.getItem("employee_token") ?? ""}`,
+        },
+        body: JSON.stringify({ full_name: name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data?.error || "Failed to update profile.");
+        return;
+      }
+      const nextName = data?.employee?.full_name || name;
+      const nextId = data?.employee?.employee_id || employeeId;
+      if (typeof data?.token === "string" && data.token) {
+        window.localStorage.setItem("employee_token", data.token);
+      }
+      onSaved({ employee_id: nextId, full_name: nextName });
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || "An unexpected error occurred.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
+      <Card className="w-full max-w-md p-6 bg-card border border-border shadow-2xl rounded-3xl relative text-left">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-4 right-4 text-muted-foreground hover:text-foreground font-bold"
+          aria-label="Close"
+        >
+          ✕
+        </button>
+        <div className="text-center mb-4">
+          <div className="mx-auto mb-3 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-500/10 text-primary">
+            <UserRound className="h-6 w-6" />
+          </div>
+          <h2 className="text-xl font-extrabold text-foreground">Edit profile</h2>
+          <p className="text-xs text-muted-foreground mt-1">Update your display name. Employee ID is managed by HR.</p>
+        </div>
+
+        {error && (
+          <div className="rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-500 mb-4 font-semibold">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-foreground mb-1.5">Name</label>
+            <input
+              required
+              maxLength={120}
+              autoComplete="name"
+              className={profileInputClass}
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-muted-foreground mb-1.5">Employee ID</label>
+            <input readOnly className={profileInputClass + " opacity-70 cursor-not-allowed"} value={employeeId} />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <Button type="button" variant="ghost" onClick={onClose} disabled={submitting} className="flex-1 py-2.5 rounded-xl text-xs font-bold">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
+              {submitting ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </div>
+  );
+}
 
 function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -163,6 +274,7 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
   const [isIdle, setIsIdle] = useState(false);
   const [countdown, setCountdown] = useState(30);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
 
   const isIdleRef = useRef(false);
   const resetTimerRef = useRef<(() => void) | null>(null);
@@ -188,6 +300,7 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
     }
 
     fetch("/api/employee/auth/validate", {
+      credentials: "include",
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     })
@@ -213,6 +326,7 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
 
   function handleLogout(reason?: string) {
     window.localStorage.removeItem("employee_token");
+    void fetch("/api/employee/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     if (reason && typeof reason === "string") {
       router.push(`/employee?reason=${encodeURIComponent(reason)}`);
     } else {
@@ -318,7 +432,12 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
             </Link>
 
             {employeeProfile && (
-              <div className="hidden lg:flex min-w-0 max-w-xs xl:max-w-sm items-center gap-3 rounded-xl border border-border/80 bg-muted/40 px-3 py-2">
+              <button
+                type="button"
+                onClick={() => setShowEditProfile(true)}
+                title="Edit profile"
+                className="hidden lg:flex min-w-0 max-w-xs xl:max-w-sm items-center gap-3 rounded-xl border border-border/80 bg-muted/40 px-3 py-2 text-left transition hover:border-primary/40 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              >
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
                   {initials}
                 </div>
@@ -328,7 +447,7 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
                     Emp ID · <span className="font-semibold text-foreground/80">{employeeId}</span>
                   </p>
                 </div>
-              </div>
+              </button>
             )}
 
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
@@ -371,7 +490,12 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
           </div>
 
           {employeeProfile && (
-            <div className="lg:hidden flex items-center gap-2.5 border-t border-border/70 px-1 py-2.5">
+            <button
+              type="button"
+              onClick={() => setShowEditProfile(true)}
+              title="Edit profile"
+              className="lg:hidden flex w-full items-center gap-2.5 border-t border-border/70 px-1 py-2.5 text-left transition hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
                 {initials}
               </div>
@@ -381,12 +505,24 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
                   Emp ID · <span className="font-semibold text-foreground/80">{employeeId}</span>
                 </p>
               </div>
-            </div>
+            </button>
           )}
         </div>
       </header>
       <main>{children}</main>
 
+      {showEditProfile && employeeProfile && (
+        <EditProfileDialog
+          initialName={employeeName}
+          employeeId={employeeProfile.employee_id}
+          onClose={() => setShowEditProfile(false)}
+          onSaved={(profile) => {
+            setEmployeeProfile(profile);
+            router.refresh();
+            window.location.reload();
+          }}
+        />
+      )}
       {showChangePassword && <ChangePasswordDialog onClose={() => setShowChangePassword(false)} />}
 
       {isIdle && !isOnLiveTest && (

@@ -217,7 +217,7 @@ export default function SystemMonitor({ open, onClose, fetcher }: { open: boolea
               <Loader2 className="h-5 w-5 animate-spin" /> Collecting metrics…
             </div>
           ) : tab === "db" ? (
-            <DbPanel data={data.db} vm={data.vm} latencyHistory={latencyHistory} period={period.title} isLive={period.id === liveId} />
+            <DbPanel data={data.db} vm={data.vm} latencyHistory={latencyHistory} period={period.title} isLive={period.id === liveId} fetcher={fetcher} />
           ) : (
             <VmPanel data={data.vm} liveHistory={liveHistory} period={period.title} />
           )}
