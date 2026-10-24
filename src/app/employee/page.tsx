@@ -147,13 +147,17 @@ export default function EmployeeLoginPage() {
       const searchParams = new URLSearchParams(window.location.search);
       const reason = searchParams.get("reason");
       const ssoError = searchParams.get("sso_error");
-      setShowWelcome(searchParams.get("mode") !== "signin" && !reason && !ssoError);
+      // Chooser (/employee) is the only employee login landing page.
+      // Password form is only via ?mode=signin. SSO errors stay on the chooser.
+      const passwordMode = searchParams.get("mode") === "signin";
+      setShowWelcome(!passwordMode);
 
       if (reason === "inactivity") {
         setError("You have been logged out due to inactivity.");
-      }
-      if (ssoError) {
+      } else if (ssoError) {
         setError(ssoError);
+      } else if (!passwordMode) {
+        setError("");
       }
       const organization = searchParams.get("org");
       if (organization) {
