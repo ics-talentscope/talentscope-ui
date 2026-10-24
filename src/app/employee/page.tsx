@@ -13,7 +13,6 @@ import {
   Building2,
   BriefcaseBusiness,
   FileText,
-  Key,
   LockKeyhole,
   MessageCircle,
   Quote,
@@ -25,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { PasswordInput } from "@/components/ui/password-input";
 import ThemeToggle from "@/components/ThemeToggle";
 
 
@@ -103,6 +103,7 @@ export default function EmployeeLoginPage() {
   const [modalError, setModalError] = useState("");
   const [modalSubmitting, setModalSubmitting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [welcomeColorIndex, setWelcomeColorIndex] = useState(0);
   const [showMotivationalQuote, setShowMotivationalQuote] = useState(false);
   const [motivationalQuoteIndex, setMotivationalQuoteIndex] = useState(-1);
@@ -133,24 +134,15 @@ export default function EmployeeLoginPage() {
     };
   }, [showWelcome]);
 
-  const [ssoEnabled, setSsoEnabled] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/employee/auth/saml/status", { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setSsoEnabled(Boolean(data?.enabled)))
-      .catch(() => setSsoEnabled(false));
-  }, []);
-
   useEffect(() => {
     const syncRouteState = () => {
       const searchParams = new URLSearchParams(window.location.search);
       const reason = searchParams.get("reason");
       const ssoError = searchParams.get("sso_error");
-      // Chooser (/employee) is the only employee login landing page.
-      // Password form is only via ?mode=signin. SSO errors stay on the chooser.
+      // Chooser stays on screen; password sign-in opens as a modal overlay.
       const passwordMode = searchParams.get("mode") === "signin";
-      setShowWelcome(!passwordMode);
+      setShowWelcome(true);
+      setShowPasswordModal(passwordMode);
 
       if (reason === "inactivity") {
         setError("You have been logged out due to inactivity.");
@@ -171,8 +163,23 @@ export default function EmployeeLoginPage() {
   }, []);
 
   const openPasswordSignIn = () => {
-    setShowWelcome(false);
-    router.push(`/employee?mode=signin${org ? `&org=${encodeURIComponent(org)}` : ""}`);
+    setError("");
+    setInfo("");
+    setIsResetPassword(false);
+    setShowPasswordModal(true);
+    const next = org
+      ? `/employee?mode=signin&org=${encodeURIComponent(org)}`
+      : "/employee?mode=signin";
+    window.history.replaceState(null, "", next);
+  };
+
+  const closePasswordModal = () => {
+    setShowPasswordModal(false);
+    setIsResetPassword(false);
+    setError("");
+    setInfo("");
+    const next = org ? `/employee?org=${encodeURIComponent(org)}` : "/employee";
+    window.history.replaceState(null, "", next);
   };
 
   const handleInfiniteLogin = () => {
@@ -243,14 +250,6 @@ export default function EmployeeLoginPage() {
     } finally {
       setModalSubmitting(false);
     }
-  };
-
-  const handleMicrosoftSSO = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setError("");
-    setInfo("Redirecting to Microsoft…");
-    window.location.assign("/api/employee/auth/saml");
   };
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -367,7 +366,7 @@ export default function EmployeeLoginPage() {
     }
   };
 
-  return showWelcome ? (
+  return (
     <main className="relative h-dvh overflow-hidden bg-background text-foreground transition-colors duration-300">
       <div className="absolute inset-0 pointer-events-none opacity-60" aria-hidden="true">
         <motion.div
@@ -712,6 +711,13 @@ export default function EmployeeLoginPage() {
             </p>
           </div>
 
+          {error && !showPasswordModal ? (
+            <div className="mb-3 w-full max-w-[360px] rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-500 flex items-center gap-2">
+              <span className="text-sm leading-none">⚠</span>
+              <span className="font-medium">{error}</span>
+            </div>
+          ) : null}
+
           <div className="w-full max-w-[360px] shrink-0 space-y-3">
             <motion.button
               type="button"
@@ -768,317 +774,218 @@ export default function EmployeeLoginPage() {
           </div>
         </section>
       </div>
-    </main>
-  ) : (
-    <div className="min-h-screen app-canvas flex items-center justify-center px-4 py-6 relative overflow-hidden transition-colors duration-300">
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-10 left-10 w-72 h-72 bg-primary/8 rounded-full blur-3xl" />
-        <div className="absolute bottom-10 right-10 w-96 h-96 bg-primary/5 rounded-full blur-3xl" />
-      </div>
 
-      {/* Theme Toggler */}
-      <div className="absolute top-4 right-4 z-20">
-        <ThemeToggle />
-      </div>
-
-      {/* ── Return to employee sign-in options ─────────────────────── */}
-      <div className="absolute top-4 left-4 z-20">
-        <Link
-          href={org ? `/employee?org=${encodeURIComponent(org)}` : "/employee"}
-          onClick={() => setShowWelcome(true)}
-          className="group inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-muted-foreground transition-colors hover:text-foreground"
+      {showPasswordModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-sm animate-fade-in"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePasswordModal();
+          }}
         >
-          <ArrowLeft className="w-3.5 h-3.5 transition-transform group-hover:-translate-x-1" />
-          <span className="text-xs font-semibold">Sign-in options</span>
-        </Link>
-      </div>
+          <Card className="w-full max-w-md p-6 md:p-7 shadow-2xl relative overflow-hidden border border-border bg-card">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-primary" />
+            <button
+              type="button"
+              onClick={closePasswordModal}
+              className="absolute top-4 right-4 z-20 text-muted-foreground hover:text-foreground font-bold"
+              aria-label="Close"
+            >
+              ✕
+            </button>
 
-      <Card className="w-full max-w-md p-6 md:p-7 shadow-card relative overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 h-1 bg-primary" />
+            <div className="mb-5 text-center relative z-10">
+              <div className="mx-auto mb-3 app-brand-mark h-12 w-12">
+                <ShieldCheck className="h-6 w-6" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground leading-tight">
+                {isResetPassword ? "Reset Portal Password" : "Employee ID and password"}
+              </h1>
+              <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
+                {isResetPassword
+                  ? "Verify your Employee ID and email to set a new password."
+                  : org
+                    ? `Sign in to ${org} with your Employee ID and password.`
+                    : "Sign in with your Employee ID and password."}
+              </p>
+            </div>
 
-        <div className="mb-5 text-center relative z-10">
-          <div className="mx-auto mb-3 app-brand-mark h-12 w-12">
-            <ShieldCheck className="h-6 w-6" />
-          </div>
+            <div className="flex justify-center mb-4 relative z-10">
+              <Badge variant="default">
+                {org ? `${org.toUpperCase()} · Secure access` : "Secure access"}
+              </Badge>
+            </div>
 
-          <h1 className="text-2xl font-bold tracking-tight text-foreground leading-tight">
-            {isResetPassword
-              ? "Reset Portal Password"
-              : "Employee ID and password"}
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
-            {isResetPassword 
-              ? "Verify your Employee ID and email to set a new password." 
-              : org
-                ? `Sign in to ${org} with your Employee ID and password.`
-                : "Sign in with your Employee ID and password."}
-          </p>
-        </div>
+            {error ? (
+              <div className="rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-400 mb-4 flex items-center gap-2 relative z-10">
+                <span className="text-sm leading-none">⚠</span>
+                <span className="font-medium">{error}</span>
+              </div>
+            ) : null}
 
-        <div className="flex justify-center mb-4 relative z-10">
-          <Badge variant="default">
-            {org ? `${org.toUpperCase()} · Secure access` : "Secure access"}
-          </Badge>
-        </div>
+            {info ? (
+              <div className="rounded-xl bg-indigo-500/10 border border-indigo-500/25 px-4 py-2.5 text-xs text-indigo-300 mb-4 flex items-center gap-2 relative z-10">
+                <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="font-medium">{info}</span>
+              </div>
+            ) : null}
 
-        {error ? (
-          <div className="rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-400 mb-4 flex items-center gap-2 relative z-10">
-            <span className="text-sm leading-none">⚠</span>
-            <span className="font-medium">{error}</span>
-          </div>
-        ) : null}
-
-        {info ? (
-          <div className="rounded-xl bg-indigo-500/10 border border-indigo-500/25 px-4 py-2.5 text-xs text-indigo-300 mb-4 flex items-center gap-2 relative z-10">
-            <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
-            <span className="font-medium">{info}</span>
-          </div>
-        ) : null}
-
-        {!isResetPassword ? (
-          <>
-            <form className="space-y-4 relative z-10" onSubmit={handleSubmit}>
-              {/* Employee ID */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                  Employee ID
-                </label>
-                <div className="relative">
+            {!isResetPassword ? (
+              <form className="space-y-4 relative z-10" onSubmit={handleSubmit}>
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Employee ID</label>
                   <input
-                    className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={employeeId}
                     onChange={(event) => setEmployeeId(event.target.value)}
                     placeholder="e.g. E1234"
                     autoComplete="username"
+                    autoFocus
                   />
                 </div>
-              </div>
 
-              {/* Password */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                  Password
-                </label>
-                <div className="relative">
-                  <input
-                    type="password"
-                    className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Password</label>
+                  <PasswordInput
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     placeholder="Enter your password"
                     autoComplete="current-password"
                   />
-                  <Key className="pointer-events-none absolute right-4 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <div className="flex justify-end mt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError("");
+                        setInfo("");
+                        setIsResetPassword(true);
+                      }}
+                      className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                    >
+                      Forgot Password?
+                    </button>
+                  </div>
                 </div>
-                <div className="flex justify-end mt-1.5">
+
+                <Button
+                  className="w-full px-4 py-2.5 rounded-xl bg-primary text-white font-bold shadow-lg shadow-indigo-500/30 hover:shadow-xl transition-all duration-200"
+                  type="submit"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Signing in…
+                    </span>
+                  ) : (
+                    "Sign In"
+                  )}
+                </Button>
+              </form>
+            ) : (
+              <form className="space-y-4 relative z-10" onSubmit={handleResetPassword}>
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Employee ID</label>
+                  <input
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
+                    value={employeeId}
+                    onChange={(event) => setEmployeeId(event.target.value)}
+                    placeholder="e.g. EMP001"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Registered Email</label>
+                  <input
+                    type="email"
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    placeholder="e.g. sofia@example.com (Leave blank if none)"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
+                  <PasswordInput
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
+                    value={resetNewPassword}
+                    onChange={(event) => setResetNewPassword(event.target.value)}
+                    placeholder="Min 8 chars, uppercase, digit, special"
+                    required
+                    autoComplete="new-password"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Confirm New Password</label>
+                  <PasswordInput
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
+                    value={resetConfirmPassword}
+                    onChange={(event) => setResetConfirmPassword(event.target.value)}
+                    placeholder="Repeat password"
+                    required
+                    autoComplete="new-password"
+                  />
+                </div>
+                <Button
+                  className="w-full px-4 py-2.5 rounded-xl bg-primary text-white font-bold shadow-lg shadow-indigo-500/30 transition-all duration-200"
+                  type="submit"
+                  disabled={loading}
+                >
+                  {loading ? "Resetting password…" : "Reset Password"}
+                </Button>
+                <div className="text-center mt-1">
                   <button
                     type="button"
                     onClick={() => {
                       setError("");
                       setInfo("");
-                      setIsResetPassword(true);
+                      setIsResetPassword(false);
                     }}
-                    className="text-[11px] font-semibold text-primary hover:text-primary dark:hover:text-indigo-300 transition-colors"
+                    className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors"
                   >
-                    Forgot Password?
+                    ← Back to Sign In
                   </button>
                 </div>
-              </div>
-
-              {/* Submit */}
-              <Button
-                className="w-full px-4 py-2.5 rounded-xl bg-primary hover:from-indigo-500 hover:to-violet-500 text-white font-bold shadow-lg shadow-indigo-500/30 hover:shadow-xl hover:shadow-indigo-500/40 transition-all duration-200"
-                type="submit"
-                disabled={loading}
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Signing in…
-                  </span>
-                ) : (
-                  "Sign In"
-                )}
-              </Button>
-            </form>
-
-            {ssoEnabled && (
-            <>
-            {/* Divider */}
-            <div className="relative my-4 z-10 flex items-center justify-center">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-slate-700/40"></div>
-              </div>
-              <span className="relative px-3 text-[9px] font-black text-slate-500 bg-slate-800 dark:bg-slate-850 uppercase tracking-widest">
-                Or continue with
-              </span>
-            </div>
-
-            {/* Outlook SSO Button */}
-            <Button
-              type="button"
-              onClick={handleMicrosoftSSO}
-              disabled={loading}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-700/80 hover:border-slate-500 bg-slate-900/40 hover:bg-slate-900 text-white font-bold transition-all duration-200 flex items-center justify-center gap-2.5 relative z-10 shadow-sm"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 23 23" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M0 0H11V11H0V0Z" fill="#F25022"/>
-                <path d="M12 0H23V11H12V0Z" fill="#7FBA00"/>
-                <path d="M0 12H11V23H0V12Z" fill="#00A4EF"/>
-                <path d="M12 12H23V23H12V12Z" fill="#FFB900"/>
-              </svg>
-              <span className="text-xs">Sign in with Microsoft</span>
-            </Button>
-            </>
+              </form>
             )}
-
-            {/* First-time hint */}
-            <div className="mt-4 rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5 relative z-10">
-              <div className="flex items-start gap-2.5">
-                <div className="w-7 h-7 rounded-lg bg-indigo-500/15 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Sparkles className="w-3.5 h-3.5 text-primary" />
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider mb-0.5">First time logging in?</p>
-                  <p className="text-xs text-slate-700 dark:text-slate-350 leading-relaxed">
-                    Use your <span className="text-foreground font-semibold">Employee ID</span> with a <span className="text-foreground font-semibold">blank password</span> or your assigned initial password.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <form className="space-y-4 relative z-10" onSubmit={handleResetPassword}>
-            {/* Employee ID */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                Employee ID
-              </label>
-              <input
-                className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
-                value={employeeId}
-                onChange={(event) => setEmployeeId(event.target.value)}
-                placeholder="e.g. EMP001"
-                required
-              />
-            </div>
-
-            {/* Registered Email */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                Registered Email
-              </label>
-              <input
-                type="email"
-                className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
-                value={resetEmail}
-                onChange={(event) => setResetEmail(event.target.value)}
-                placeholder="e.g. sofia@example.com (Leave blank if none)"
-              />
-            </div>
-
-            {/* New Password */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                New Password
-              </label>
-              <input
-                type="password"
-                className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
-                value={resetNewPassword}
-                onChange={(event) => setResetNewPassword(event.target.value)}
-                placeholder="Min 8 chars, uppercase, digit, special"
-                required
-              />
-            </div>
-
-            {/* Confirm New Password */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                Confirm New Password
-              </label>
-              <input
-                type="password"
-                className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-600/80 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:bg-white dark:focus:bg-slate-900/80 transition-all"
-                value={resetConfirmPassword}
-                onChange={(event) => setResetConfirmPassword(event.target.value)}
-                placeholder="Repeat password"
-                required
-              />
-            </div>
-
-            {/* Reset Submit */}
-            <Button
-              className="w-full px-4 py-2.5 rounded-xl bg-primary hover:from-indigo-500 hover:to-violet-500 text-white font-bold shadow-lg shadow-indigo-500/30 hover:shadow-xl hover:shadow-indigo-500/40 transition-all duration-200"
-              type="submit"
-              disabled={loading}
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Resetting password…
-                </span>
-              ) : (
-                "Reset Password"
-              )}
-            </Button>
-
-            {/* Back to Login link */}
-            <div className="text-center mt-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setError("");
-                  setInfo("");
-                  setIsResetPassword(false);
-                }}
-                className="text-xs font-semibold text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
-              >
-                ← Back to Sign In
-              </button>
-            </div>
-          </form>
-        )}
-      </Card>
+          </Card>
+        </div>
+      )}
 
       {firstTimeModalData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
-          <Card className="w-full max-w-md p-6 bg-white dark:bg-slate-900 border border-indigo-100 dark:border-slate-800 shadow-2xl rounded-3xl relative text-left">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
+          <Card className="w-full max-w-md p-6 bg-card border border-border shadow-2xl rounded-3xl relative text-left">
             <button
               type="button"
               onClick={() => setFirstTimeModalData(null)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-bold"
+              className="absolute top-4 right-4 text-muted-foreground hover:text-foreground font-bold"
             >
               ✕
             </button>
-
             <div className="text-center mb-4">
               <div className="mx-auto mb-3 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-500/10 text-primary">
                 <ShieldCheck className="h-6 w-6" />
               </div>
-              <h2 className="text-xl font-extrabold text-slate-900 dark:text-white">Welcome, {firstTimeModalData.full_name}!</h2>
+              <h2 className="text-xl font-extrabold text-foreground">Welcome, {firstTimeModalData.full_name}!</h2>
               <p className="text-xs text-muted-foreground mt-1">Employee ID: {firstTimeModalData.employee_id}</p>
             </div>
-
             {modalError && (
               <div className="rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-400 mb-4 font-semibold flex items-center gap-2">
                 <span>⚠</span>
                 <span>{modalError}</span>
               </div>
             )}
-
             {!changePasswordMode ? (
               <div className="space-y-4">
-                <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-4 text-xs text-slate-700 dark:text-slate-350 leading-relaxed">
-                  <p className="font-bold text-primary dark:text-indigo-300 mb-1">🔐 First Time Login</p>
+                <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-4 text-xs text-muted-foreground leading-relaxed">
+                  <p className="font-bold text-primary mb-1">First Time Login</p>
                   You are logging in with your initial assigned password. You can choose to keep this password or set a new custom one now.
                 </div>
-
                 <div className="flex flex-col gap-2">
                   <Button
                     onClick={handleKeepPassword}
                     disabled={modalSubmitting}
-                    className="w-full py-2.5 rounded-xl bg-primary text-white font-bold shadow-md shadow-indigo-500/20 hover:shadow-lg transition-all"
+                    className="w-full py-2.5 rounded-xl bg-primary text-white font-bold"
                   >
                     {modalSubmitting ? "Processing..." : "Keep Same Password & Continue"}
                   </Button>
@@ -1090,7 +997,7 @@ export default function EmployeeLoginPage() {
                       setModalConfirmPassword("");
                     }}
                     disabled={modalSubmitting}
-                    className="w-full py-2.5 rounded-xl border-border font-bold hover:bg-secondary"
+                    className="w-full py-2.5 rounded-xl border-border font-bold"
                   >
                     Set a New Password
                   </Button>
@@ -1099,52 +1006,38 @@ export default function EmployeeLoginPage() {
             ) : (
               <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    New Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      required
-                      className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium outline-none focus:border-indigo-500 transition-all"
-                      placeholder="Create a strong password"
-                      value={modalNewPassword}
-                      onChange={(e) => setModalNewPassword(e.target.value)}
-                    />
-                  </div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
+                  <PasswordInput
+                    required
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium outline-none focus:border-indigo-500 transition-all"
+                    placeholder="Create a strong password"
+                    value={modalNewPassword}
+                    onChange={(e) => setModalNewPassword(e.target.value)}
+                    autoComplete="new-password"
+                  />
                 </div>
-
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1.5">
-                    Confirm New Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      required
-                      className="w-full text-sm rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/60 px-4 py-2.5 text-slate-900 dark:text-white font-medium outline-none focus:border-indigo-500 transition-all"
-                      placeholder="Repeat your password"
-                      value={modalConfirmPassword}
-                      onChange={(e) => setModalConfirmPassword(e.target.value)}
-                    />
-                  </div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Confirm New Password</label>
+                  <PasswordInput
+                    required
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium outline-none focus:border-indigo-500 transition-all"
+                    placeholder="Repeat your password"
+                    value={modalConfirmPassword}
+                    onChange={(e) => setModalConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                  />
                 </div>
-
                 <div className="flex gap-2 pt-2">
                   <Button
                     type="button"
                     variant="ghost"
                     onClick={() => setChangePasswordMode(false)}
                     disabled={modalSubmitting}
-                    className="flex-1 py-2.5 rounded-xl text-xs font-bold border-border"
+                    className="flex-1 py-2.5 rounded-xl text-xs font-bold"
                   >
                     ← Back
                   </Button>
-                  <Button
-                    type="submit"
-                    disabled={modalSubmitting}
-                    className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold"
-                  >
+                  <Button type="submit" disabled={modalSubmitting} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
                     {modalSubmitting ? "Saving..." : "Save & Continue"}
                   </Button>
                 </div>
@@ -1153,6 +1046,6 @@ export default function EmployeeLoginPage() {
           </Card>
         </div>
       )}
-    </div>
+    </main>
   );
 }
