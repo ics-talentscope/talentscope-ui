@@ -324,14 +324,32 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
       });
   }, [router]);
 
-  function handleLogout(reason?: string) {
+  async function handleLogout(reason?: string) {
     window.localStorage.removeItem("employee_token");
-    void fetch("/api/employee/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
-    if (reason && typeof reason === "string") {
-      router.push(`/employee?reason=${encodeURIComponent(reason)}`);
-    } else {
-      router.push("/employee");
+    const reasonQuery =
+      reason && typeof reason === "string" ? `?reason=${encodeURIComponent(reason)}` : "";
+    const fallback =
+      reason && typeof reason === "string"
+        ? `/employee?reason=${encodeURIComponent(reason)}`
+        : "/employee";
+    try {
+      const res = await fetch(`/api/employee/auth/logout${reasonQuery}`, {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      const microsoftLogoutUrl =
+        typeof data?.microsoftLogoutUrl === "string" ? data.microsoftLogoutUrl.trim() : "";
+      // End the Microsoft Entra session so the next Infinite Login asks for credentials.
+      if (microsoftLogoutUrl) {
+        window.location.assign(microsoftLogoutUrl);
+        return;
+      }
+    } catch {
+      // Fall through to local redirect if logout API is unavailable.
     }
+    router.push(fallback);
   }
 
   const employeeName =
