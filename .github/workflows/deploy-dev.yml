@@ -1,0 +1,50 @@
+name: UI - Deploy to Azure Development
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      confirm_development:
+        description: Confirm deployment of develop to Development
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || inputs.confirm_development == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/develop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: Type-check UI
+        run: npm run typecheck
+
+  deploy:
+    name: Deploy UI on ICSBETINTAPP01 (dev)
+    needs: validate
+    if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || inputs.confirm_development == true)
+    runs-on: [self-hosted, linux, icsbetintapp01]
+    environment: development
+    timeout-minutes: 45
+    concurrency:
+      group: talentscope-dev-ui-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/develop
+      - name: Build, deploy, and verify UI
+        run: bash .github/scripts/deploy-dev.sh
