@@ -1,8 +1,14 @@
 # TalentScope UI (Frontend)
 
-The TalentScope web interface is built with **Next.js (App Router)**, **React 18**, **TypeScript**, and **TailwindCSS**.
+The TalentScope web interface is built with **Next.js 14 (App Router)**, **React 18**, **TypeScript**, and **TailwindCSS**.
 
-It acts as the single-origin client interface for candidates, employees, and administrators. All API requests under `/api/*` are reverse-proxied by Next.js to the Python FastAPI backend. Set `BACKEND_URL` to the Render API URL when building for Vercel; local development defaults to `http://127.0.0.1:8000`.
+It acts as the single-origin client interface for candidates, employees, and administrators. All API requests under `/api/*` are transparently reverse-proxied by Next.js to the Python FastAPI backend (`BACKEND_URL`, default `http://127.0.0.1:8000`).
+
+## Azure production deployment
+
+The `UI - Deploy to Azure Production` GitHub Actions workflow is manual-only. Run it from the `main` branch and confirm the production input; pushes do not deploy. Type-checking runs before deployment on the `self-hosted`, `linux`, and `icsbetintapp01` runner.
+
+The runner syncs this repository to `/opt/talentscope/talentscope-UI/ui`, then rebuilds and verifies the existing `ui` Compose service. It uses the current Compose configuration and port bindings; production settings remain on the VM in `/opt/talentscope/talentscope-UI/.env.azure`.
 
 ---
 
@@ -24,7 +30,7 @@ It acts as the single-origin client interface for candidates, employees, and adm
   - Internal skill assessments, MCQ learning quizzes, video proctoring, and SAML 2.0 Single Sign-On.
 
 ### 2. Single Origin API Proxy
-All client calls target `/api/...` on the UI origin. The rewrite destination is captured when Next.js builds, so set `BACKEND_URL` during the build. Docker Compose passes `http://python:8000` as a build argument; Vercel builds require `BACKEND_URL`; local development defaults to `http://127.0.0.1:8000`. Configured in `next.config.mjs`:
+All client calls target `/api/...` on origin `http://localhost:3000`. The rewrite destination is captured when Next.js starts or builds, so set `BACKEND_URL` before starting the dev server or building. In this workspace, `next.config.mjs` loads it from the root `.env.local`; Docker Compose passes `http://python:8000` as a build argument. Local development defaults to `http://127.0.0.1:8000` only when no `BACKEND_URL` is configured. Restart the dev server after changing the value. Configured in `next.config.mjs`:
 ```javascript
 async rewrites() {
   const backend = process.env.BACKEND_URL || 'http://127.0.0.1:8000';
@@ -32,17 +38,13 @@ async rewrites() {
 }
 ```
 
-### Deploy to Vercel
-
-Push the contents of this folder as the UI repository and import that repository into Vercel. Use the repository root as the project root, keep the Next.js build command (`npm run build`), and add `BACKEND_URL` to the Vercel build environment variables with the Python Render service's HTTPS URL. The build fails explicitly if `BACKEND_URL` is missing on Vercel. Do not use a `NEXT_PUBLIC_` prefix; the API URL is used by the server-side rewrite.
-
 ---
 
 ## 🚀 Running the UI
 
 ### 1. Install Dependencies
 ```powershell
-cd ui
+cd UI
 npm install
 ```
 
@@ -58,12 +60,11 @@ npm run typecheck
 npm run lint
 ```
 
-### 4. Refresh the Python skill-match bundle (combined checkout only)
-The Python service includes a compiled Node bundle for server-side skill matching. From the combined workspace, if the shared matching logic changes:
+### 4. Build Skill-Match Engine
+If changes are made to [`src/lib/skill-match.ts`](file:///src/lib/skill-match.ts), rebuild the compiled commonjs bundle used by the Python backend:
 ```powershell
 npm run build:skill-match
 ```
-This optional development command expects the `python` folder beside `ui`; it is not part of the Vercel build.
 
 ---
 
@@ -73,13 +74,13 @@ This optional development command expects the `python` folder beside `ui`; it is
 - **Cause**: The FastAPI backend is not running on port 8000.
 - **Fix**: Start the backend in a separate terminal:
   ```powershell
-  cd ..\python
-  .\.venv\Scripts\uvicorn.exe main:app --port 8000 --reload
+  cd python
+  .\venv\Scripts\uvicorn.exe main:app --port 8000 --reload
   ```
 
 ### 2. Admin Login: "Admin password not setup"
-- **Cause**: `ADMIN_PASSWORD` or `SCREENING_ADMIN_PASSWORD` is blank in the Python service environment.
-- **Fix**: Set non-empty values in the Python service's environment and restart the backend.
+- **Cause**: `ADMIN_PASSWORD` or `SCREENING_ADMIN_PASSWORD` is blank in root `.env.local`.
+- **Fix**: Open `.env.local`, set non-empty passwords, and restart the backend.
 
 ### 3. Stale State / Blank Screen / Build Cache
 - **Fix**: Clear `.next` build cache:

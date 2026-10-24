@@ -1,0 +1,48 @@
+name: UI - Deploy to Azure Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: Confirm deployment of main to Production
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: Type-check UI
+        run: npm run typecheck
+
+  deploy:
+    name: Deploy UI on ICSBETINTAPP01
+    needs: validate
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production == true
+    runs-on: [self-hosted, linux, icsbetintapp01]
+    environment: production
+    timeout-minutes: 45
+    concurrency:
+      group: talentscope-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+      - name: Build, deploy, and verify UI
+        run: bash .github/scripts/deploy-production.sh

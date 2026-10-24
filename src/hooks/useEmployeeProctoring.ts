@@ -111,6 +111,9 @@ export function useEmployeeProctoring(options: {
       "Fullscreen Mode Exited": "You exited fullscreen mode. You must remain in fullscreen for the entire test.",
       "Camera Disabled": "Your camera was turned off or disconnected. Camera must remain active.",
       "Camera Track Lost": "Camera feed lost. Please keep your camera enabled and visible.",
+      "Camera Blocked or Closed": "Your camera is covered, closed or showing no picture. Keep it uncovered and facing you.",
+      "Camera Permission Revoked": "Camera access was turned off in the browser. Camera access must stay allowed for the whole test.",
+      "Camera Feed Frozen": "Your camera picture has frozen. Check that the camera is on and uncovered.",
       "Recording Interrupted": "Session recording stopped unexpectedly. Do not disable camera or close the browser.",
       "Face Missing": "Face not detected in camera feed. Please face your screen clearly.",
       "Looking Away": "Please look directly at your screen.",
@@ -408,6 +411,83 @@ export function useEmployeeProctoring(options: {
       clearInterval(monitorId);
     };
   }, [phase, camStream, mediaRecorderRef, triggerProctorWarning, intentionalRecorderStopRef]);
+
+  // Covered lens, closed lid, frozen or dead feed, and camera permission withdrawn mid-test
+  useEffect(() => {
+    if (phase !== "running" || !camStream) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 24;
+    let badSince: number | null = null;
+    let badReason = "";
+    let lastSignature = "";
+    let identicalFrames = 0;
+
+    const inspect = (): string | null => {
+      const track = camStream.getVideoTracks()[0];
+      if (!track || track.readyState !== "live" || !track.enabled) return "Camera track is not live";
+      if (track.muted) return "Camera stopped delivering video";
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || video.videoWidth === 0) return "Camera picture is unavailable";
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(video, 0, 0, 32, 24);
+      const data = ctx.getImageData(0, 0, 32, 24).data;
+      let sum = 0;
+      let sumSq = 0;
+      const n = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) {
+        const v = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        sum += v;
+        sumSq += v * v;
+      }
+      const mean = sum / n;
+      const variance = sumSq / n - mean * mean;
+      if (mean < 14 || (variance < 3 && mean < 40)) return "Camera picture is black or covered";
+      const signature = `${Math.round(sum)}:${Math.round(sumSq)}`;
+      identicalFrames = signature === lastSignature ? identicalFrames + 1 : 0;
+      lastSignature = signature;
+      if (identicalFrames >= 8) return "Camera picture is frozen";
+      return null;
+    };
+
+    const id = setInterval(() => {
+      const reason = inspect();
+      const now = Date.now();
+      if (!reason) {
+        badSince = null;
+        return;
+      }
+      if (badSince == null || reason !== badReason) {
+        badSince = now;
+        badReason = reason;
+        return;
+      }
+      if (now - badSince >= 4000) {
+        triggerProctorWarning(reason.includes("frozen") ? "Camera Feed Frozen" : "Camera Blocked or Closed", reason);
+        badSince = now;
+        identicalFrames = 0;
+      }
+    }, 1000);
+
+    let permissionStatus: PermissionStatus | null = null;
+    const onPermissionChange = () => {
+      if (permissionStatus && permissionStatus.state !== "granted") triggerProctorWarning("Camera Permission Revoked");
+    };
+    navigator.permissions
+      ?.query({ name: "camera" as PermissionName })
+      .then((status) => {
+        permissionStatus = status;
+        status.addEventListener("change", onPermissionChange);
+      })
+      .catch(() => {});
+
+    return () => {
+      clearInterval(id);
+      permissionStatus?.removeEventListener("change", onPermissionChange);
+    };
+  }, [phase, camStream, triggerProctorWarning, videoRef]);
 
   // Camera on but no face (privacy slider / covered lens / left frame)
   useEffect(() => {

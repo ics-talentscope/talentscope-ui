@@ -109,6 +109,14 @@ export default function CandidatePortal() {
   const params = useParams();
   const resumeId = params?.id as string;
 
+  const interviewFetch = (input: string, init: RequestInit = {}) => {
+    const token = typeof window !== "undefined" ? window.sessionStorage.getItem(`interview_token_${resumeId}`) : null;
+    const headers = new Headers(init.headers || {});
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+
+
   const [questions, setQuestions] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState('javascript');
@@ -220,7 +228,7 @@ export default function CandidatePortal() {
 
   const loadTiming = async () => {
     try {
-      const res = await fetch(`/api/interview/${resumeId}/timing`, { cache: 'no-store' });
+      const res = await interviewFetch(`/api/interview/${resumeId}/timing`, { cache: 'no-store' });
       if (res.ok) applyTiming(await res.json());
     } catch (err) {
       console.warn("Failed to load interview timing:", err);
@@ -315,7 +323,7 @@ export default function CandidatePortal() {
             formData.append('video', file);
             formData.append('duration', String(recordingDuration));
             
-            const uploadRes = await fetch(`/api/interview/${resumeId}/upload_video`, {
+            const uploadRes = await interviewFetch(`/api/interview/${resumeId}/upload_video`, {
               method: 'POST',
               body: formData,
             });
@@ -487,7 +495,7 @@ export default function CandidatePortal() {
     if (window.speechSynthesis) speechSynthesis.cancel();
     
     // Call conclude API to mark session as used in the backend registry
-    fetch(`/api/interview/${resumeId}/conclude`, { method: 'POST' }).catch(e => {
+    interviewFetch(`/api/interview/${resumeId}/conclude`, { method: 'POST' }).catch(e => {
       console.error("Failed to mark interview as concluded:", e);
     });
     
@@ -561,7 +569,7 @@ export default function CandidatePortal() {
       const timestamp = new Date().toISOString();
 
       // Always persist for admin audit (silent for candidate when adminOnly)
-      fetch(`/api/interview/${resumeId}/proctor_violation`, {
+      interviewFetch(`/api/interview/${resumeId}/proctor_violation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -627,7 +635,7 @@ export default function CandidatePortal() {
   useEffect(() => {
     if (!resumeId) return;
 
-    fetch(`/api/interview/${resumeId}/questions`)
+    interviewFetch(`/api/interview/${resumeId}/questions`)
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
@@ -645,7 +653,7 @@ export default function CandidatePortal() {
       });
 
     // Fetch previously submitted answers
-    fetch(`/api/interview/${resumeId}/answers`)
+    interviewFetch(`/api/interview/${resumeId}/answers`)
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -1246,7 +1254,7 @@ export default function CandidatePortal() {
         // Otherwise continue — server may still use Gemini if configured.
       }
 
-      const res = await fetch(`/api/interview/${resumeId}/verify_id`, {
+      const res = await interviewFetch(`/api/interview/${resumeId}/verify_id`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1320,7 +1328,7 @@ export default function CandidatePortal() {
             if (recordingDuration > 0) {
               formData.append('duration', recordingDuration.toFixed(1));
             }
-            const uploadRes = await fetch(`/api/interview/${resumeId}/upload_video`, {
+            const uploadRes = await interviewFetch(`/api/interview/${resumeId}/upload_video`, {
               method: 'POST',
               body: formData
             });
@@ -1355,7 +1363,7 @@ export default function CandidatePortal() {
     
     // Mark interview as started in database
     try {
-      const startRes = await fetch(`/api/interview/${resumeId}/start`, {
+      const startRes = await interviewFetch(`/api/interview/${resumeId}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1802,7 +1810,7 @@ export default function CandidatePortal() {
     stopListening();
     
     try {
-      const res = await fetch(`/api/interview/${resumeId}/submit_answer`, {
+      const res = await interviewFetch(`/api/interview/${resumeId}/submit_answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1870,7 +1878,7 @@ export default function CandidatePortal() {
     }
 
     try {
-      const res = await fetch(`/api/interview/${resumeId}/submit_answer`, {
+      const res = await interviewFetch(`/api/interview/${resumeId}/submit_answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1967,7 +1975,7 @@ export default function CandidatePortal() {
     const answerToSave = answer;
 
     try {
-      await fetch(`/api/interview/${resumeId}/submit_answer`, {
+      await interviewFetch(`/api/interview/${resumeId}/submit_answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2049,7 +2057,7 @@ export default function CandidatePortal() {
     setTerminalOutput(null);
 
     try {
-      const res = await fetch(`/api/interview/${resumeId}/run_code`, {
+      const res = await interviewFetch(`/api/interview/${resumeId}/run_code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

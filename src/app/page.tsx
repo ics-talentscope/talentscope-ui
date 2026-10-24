@@ -50,6 +50,10 @@ export default function HomePage() {
       if (!response.ok || !body.success) {
         throw new Error(body?.message || "Verification failed");
       }
+      if (!body.interviewToken || !body.resumeId) {
+        throw new Error("Interview session could not be started. Please try again.");
+      }
+      window.sessionStorage.setItem(`interview_token_${body.resumeId}`, body.interviewToken);
 
       router.push(`/interview/${body.resumeId}`);
     } catch (err: any) {

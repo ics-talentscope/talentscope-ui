@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ResultsView, ConfirmModal, type ResultReviewItem } from "@/components/test-view";
 import { CheckCircle2, Clock, Flag, XCircle, Zap, ArrowRight, RotateCcw,
-  Loader2, AlertTriangle } from "lucide-react";
+  Loader2, AlertTriangle, Send, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
 import type { Test, TestQuestion } from "@/types/learning";
@@ -128,6 +128,9 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   const timerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef   = useRef("");
   const submittingRef = useRef(false);
+  const endAtRef = useRef<number | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [expiredOnLoad, setExpiredOnLoad] = useState(false);
 
   const [token,       setToken]       = useState("");
   const [initialProctoring, setInitialProctoring] = useState<EmployeeProctoringState | null>(null);
@@ -221,6 +224,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           finalTimeLeft = Math.max(0, finalTimeLeft - elapsedSeconds);
         }
         setTimeLeft(finalTimeLeft);
+        if (testData.status === "in_progress" && finalTimeLeft <= 0) setExpiredOnLoad(true);
 
         const saved = testData.in_progress as Record<number, number> | null;
         if (saved && typeof saved === "object") {
@@ -289,14 +293,22 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
     };
   }, [phase, answers, currentIdx, token, testId]);
 
-  // ── countdown timer ────────────────────────────────────────────
+  // ── countdown timer (deadline based, so background-tab throttling cannot stretch the limit) ──
   useEffect(() => {
-    if (phase !== "running" || timeLeft === null || timeLeft <= 0) return;
-    const id = setInterval(() => {
-      setTimeLeft((prev) => (prev !== null ? prev - 1 : null));
-    }, 1000);
+    if (phase !== "running" || timeLeft === null) return;
+    if (endAtRef.current === null) endAtRef.current = Date.now() + timeLeft * 1000;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil(((endAtRef.current ?? Date.now()) - Date.now()) / 1000));
+      setTimeLeft((prev) => (prev === remaining ? prev : remaining));
+    };
+    tick();
+    const id = setInterval(tick, 500);
     return () => clearInterval(id);
-  }, [phase, timeLeft]);
+  }, [phase, timeLeft === null]);
+
+  useEffect(() => {
+    if (phase !== "running") endAtRef.current = null;
+  }, [phase]);
 
   const answersRef = useRef(answers);
   const handleSubmitRef = useRef<
@@ -313,6 +325,13 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       handleSubmitRef.current(answersRef.current, { autoSubmitted: true, timeExpired: true });
     }
   }, [timeLeft, phase]);
+
+  // A test left open past its limit is submitted with the answers already saved
+  useEffect(() => {
+    if (!expiredOnLoad || phase !== "ready" || !questions?.length) return;
+    setExpiredOnLoad(false);
+    handleSubmitRef.current(answersRef.current, { autoSubmitted: true, timeExpired: true });
+  }, [expiredOnLoad, phase, questions]);
 
   useEffect(() => {
     return () => {
@@ -450,12 +469,34 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   }, [finalizeRecordingBlob, uploadRecordingBlob]);
 
   const handleStartTest = async () => {
-    // Camera permission UI must finish before fullscreen can activate reliably.
+    submittingRef.current = false;
+    setCameraError(null);
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("unsupported");
+      stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: "user" },
         audio: false,
       });
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "";
+      setCameraError(
+        name === "NotAllowedError" || name === "SecurityError"
+          ? "Camera access was denied. Allow camera access for this site in your browser settings, then press Start again."
+          : name === "NotFoundError"
+            ? "No camera was found. Connect a camera and press Start again."
+            : name === "NotReadableError"
+              ? "Your camera is being used by another application. Close it and press Start again."
+              : "A working camera is required for this assessment. Check your camera and browser permissions, then try again."
+      );
+      return;
+    }
+    if (stream.getVideoTracks().every((t) => t.readyState !== "live")) {
+      stream.getTracks().forEach((t) => t.stop());
+      setCameraError("Your camera is not producing video. Check that it is on and not covered, then press Start again.");
+      return;
+    }
+    try {
       setCamStream(stream);
 
       const recorder = createMediaRecorder(stream);
@@ -474,7 +515,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         recordingStartRef.current = Date.now();
       }
     } catch (err) {
-      console.warn("Failed to access webcam; continuing without camera:", err);
+      console.warn("Recording setup failed; continuing without video recording:", err);
     }
 
     // Brief pause lets the browser close the camera permission banner before fullscreen.
@@ -499,30 +540,16 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           body: JSON.stringify({
             status: "in_progress",
             started_at: startTime,
+            camera_granted: true,
           }),
         });
       } catch (err) {
         console.warn("Failed to update test start time in database:", err);
       }
+      endAtRef.current = Date.now() + limit * 1000;
       setTimeLeft(limit);
     } else if (test && test.status === "in_progress") {
-      const remaining = timeLeft ?? limit;
-      if (remaining <= 0) {
-        const startTime = new Date().toISOString();
-        try {
-          await fetch(`/api/employee/tests/${testId}`, {
-            method: "PATCH",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ started_at: startTime }),
-          });
-        } catch (err) {
-          console.warn("Failed to refresh test timer in database:", err);
-        }
-        setTimeLeft(limit);
-      }
+      endAtRef.current = Date.now() + Math.max(0, timeLeft ?? limit) * 1000;
     }
 
     setPhase("running");
@@ -613,6 +640,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       }
       setPhase("submitted");
       setMsg(null);
+      submittingRef.current = false;
       setVideoUploadState("uploading");
 
       const uploaded = recordingBlob
@@ -731,7 +759,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
             } catch (err) {
               console.error("Failed to reset test:", err);
             }
-            setPhase("running");
+            submittingRef.current = false;
+            setPhase("ready");
             setAnswers({}); setCurrentIdx(0); setFlags(new Set()); setErr(null); setMsg(null);
           }}
           onCancel={() => setPhase("submitted")}
@@ -765,7 +794,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           <p className="text-sm text-muted-foreground font-semibold max-w-md mx-auto leading-relaxed">
             {test?.status === "in_progress"
               ? "Re-enter the assessment window. Allow fullscreen and camera if prompted for stronger proctoring."
-              : "Camera and fullscreen are recommended for proctoring. You can still start if either is unavailable. Tab switching and other integrity checks still apply."}
+              : "A working camera is required for this assessment. Fullscreen is also used for proctoring, and tab switching and other integrity checks apply."}
           </p>
         </div>
 
@@ -777,18 +806,25 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
               <span className="text-foreground font-bold">Microsoft Edge</span> only. Safari/Firefox may fail recording.
             </li>
             <li>
-              Allow <span className="text-foreground font-bold">webcam</span> when prompted. Camera and fullscreen are
-              recommended for proctoring; you can still start if either is unavailable.
+              Allow <span className="text-foreground font-bold">webcam</span> when prompted. The assessment cannot start without
+              camera access, and a covered, closed or disconnected camera is flagged as a violation.
             </li>
             <li>
               Face monitoring is active: looking away/down, missing face, or multiple people in frame are flagged with timestamps.
             </li>
             <li>Tab switch, minimize, refresh, copy/paste, and DevTools are blocked.</li>
             <li>Session may be video-recorded when camera access is granted.</li>
-            <li>{EMPLOYEE_PROCTOR_MAX_VIOLATIONS} strikes auto-submits your assessment.</li>
+            <li>{EMPLOYEE_PROCTOR_MAX_VIOLATIONS} strikes ends your assessment and submits the answers entered so far.</li>
+            <li>The assessment is submitted automatically when the time limit ends.</li>
           </ul>
         </div>
 
+        {cameraError && (
+          <div role="alert" className="max-w-md mx-auto rounded-2xl border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-900/50 px-4 py-3 text-sm font-semibold text-red-600 dark:text-red-400 flex items-start gap-2 text-left">
+            <Camera className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>{cameraError}</span>
+          </div>
+        )}
         <Button
           onClick={handleStartTest}
           size="lg"
@@ -829,16 +865,10 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           variant="outline"
           size="sm"
           className={`gap-1.5 rounded-lg border ${allAnswered ? "border-indigo-500 dark:border-indigo-700 text-primary bg-indigo-50 dark:bg-slate-900 font-semibold" : "border-border text-muted-foreground hover:bg-secondary"}`}
-          disabled={!allAnswered || submittingRef.current}
+          disabled={!allAnswered}
           onClick={() => handleSubmit(answers)}
         >
-          {submittingRef.current ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : allAnswered ? (
-            <CheckCircle2 className="w-3.5 h-3.5" />
-          ) : (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          )}
+          {allAnswered ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
           Submit
         </Button>
       </header>

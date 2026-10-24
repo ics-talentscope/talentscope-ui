@@ -76,7 +76,15 @@ import {
 import { formatProductDisplayName } from "@/lib/product-display-name";
 import { getPortalPrimaryProctoring } from "@/lib/portal-proctor-display";
 import { calculateSkillMatch, candidateMatchText, compareMatchRank, compileJdForMatch, decisionFromScore, employeeMatchText, extractJdMandatorySkills, extractJdPrimarySkills, QUALIFIED_COVERAGE_PERCENT, scoreOverrideForJd, type SkillBreakdownItem, type ScoreParts } from "@/lib/skill-match";
-import { clearAdminAccessFlags, readAdminAccessFlags, storeAdminAccessFlags } from "@/lib/admin-accounts";
+import {
+  ADMIN_SESSION_EXPIRED_EVENT,
+  accessFlagsFromPayload,
+  clearAdminAccessFlags,
+  readAdminAccessFlags,
+  storeAdminAccessFlags,
+  type AdminAccessFlags,
+} from "@/lib/admin-accounts";
+import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
 function portalEmployeeName(account: { full_name?: string | null; employee_id?: string | null }): string {
@@ -90,6 +98,22 @@ function portalEmployeeId(account: { employee_id?: string | null }): string {
 }
 
 const CORP_POOL_EARLIER_BATCH = "__earlier__";
+
+// macOS file pickers grey out files whose type isn't listed, so give MIME types alongside extensions.
+const FILE_TYPES = {
+  pdf: ".pdf,application/pdf",
+  word: ".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: ".xls,application/vnd.ms-excel",
+  csv: ".csv,text/csv,text/comma-separated-values,application/csv",
+  zip: ".zip,application/zip,application/x-zip-compressed",
+  txt: ".txt,text/plain",
+  html: ".html,.htm,text/html",
+};
+
+function acceptTypes(...kinds: Array<keyof typeof FILE_TYPES>): string {
+  return kinds.map((k) => FILE_TYPES[k]).join(",");
+}
 
 function uploadGroupKey(item: {
   upload_batch?: string;
@@ -584,7 +608,28 @@ function portalVideoFileName(employeeId: string, employeeName: string): string {
   return namePart ? `${idPart}-${namePart}.webm` : `${idPart}.webm`;
 }
 
+const inflightGets = new Map<string, Promise<Response>>();
+const CLIENT_ID =
+  typeof window !== "undefined" && typeof window.crypto?.randomUUID === "function"
+    ? window.crypto.randomUUID()
+    : `c${Math.random().toString(36).slice(2)}`;
+
 function adminFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const method = (init?.method || "GET").toUpperCase();
+  if (method === "GET" && !init?.body && !init?.signal && typeof input === "string") {
+    const key = input;
+    const shared = inflightGets.get(key);
+    if (shared) return shared.then((res) => res.clone());
+    const request = adminFetchNow(input, init).finally(() => {
+      if (inflightGets.get(key) === request) inflightGets.delete(key);
+    });
+    inflightGets.set(key, request);
+    return request.then((res) => res.clone());
+  }
+  return adminFetchNow(input, init);
+}
+
+function adminFetchNow(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : null;
   const headersObj: Record<string, string> = {};
 
@@ -605,6 +650,7 @@ function adminFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   if (token) {
     headersObj["Authorization"] = `Bearer ${token}`;
   }
+  headersObj["X-Client-Id"] = CLIENT_ID;
 
   // Remove Content-Type for FormData requests so browser can set boundary automatically
   if (init?.body && typeof init.body !== "string" && !(init.body instanceof URLSearchParams)) {
@@ -616,11 +662,7 @@ function adminFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     headers: headersObj,
   }).then((res) => {
     if (res.status === 401 && typeof window !== "undefined") {
-      window.sessionStorage.removeItem("resume-admin-authenticated");
-      window.sessionStorage.removeItem("admin-email");
-      window.sessionStorage.removeItem("admin_token");
-      clearAdminAccessFlags();
-      window.location.reload();
+      window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
     }
     return res;
   });
@@ -645,7 +687,22 @@ async function fetchWithTimeout(input: string, ms: number, label: string): Promi
   }
 }
 
-async function fetchJsonWithRetry(
+const inflightJson = new Map<string, Promise<any | null>>();
+
+function fetchJsonWithRetry(
+  url: string,
+  opts: { timeoutMs: number; retries?: number; label: string }
+): Promise<any | null> {
+  const shared = inflightJson.get(url);
+  if (shared) return shared;
+  const request = fetchJsonWithRetryOnce(url, opts).finally(() => {
+    if (inflightJson.get(url) === request) inflightJson.delete(url);
+  });
+  inflightJson.set(url, request);
+  return request;
+}
+
+async function fetchJsonWithRetryOnce(
   url: string,
   opts: { timeoutMs: number; retries?: number; label: string }
 ): Promise<any | null> {
@@ -1071,8 +1128,14 @@ export default function AdminDashboard() {
   const [authenticated, setAuthenticated] = useState(false);
   const [authInitialized, setAuthInitialized] = useState(false);
   const [adminEmail, setAdminEmail] = useState("");
-  const [canViewEmployeePortal, setCanViewEmployeePortal] = useState(() => readAdminAccessFlags().canViewEmployeePortal);
-  const [canChangePassword, setCanChangePassword] = useState(false);
+  const [adminAccess, setAdminAccess] = useState<AdminAccessFlags>(() => readAdminAccessFlags());
+  const adminPermissions = adminAccess.permissions;
+  const isSuperAdmin = adminAccess.isSuperAdmin;
+  const canViewAllScreeningData = isSuperAdmin || adminPermissions.allScreeningData;
+  const canManagePortalConfig = isSuperAdmin || adminPermissions.portalConfig;
+  const canViewEmployeePortal = adminPermissions.employeePortal;
+  const canChangePassword = adminPermissions.changePassword;
+  const [showAccessManager, setShowAccessManager] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -1257,11 +1320,10 @@ export default function AdminDashboard() {
   });
   const [isUpdatingSettings, setIsUpdatingSettings] = useState(false);
   const [showMonitor, setShowMonitor] = useState(false);
+  const [systemLogsTotal, setSystemLogsTotal] = useState(0);
   const closeMonitor = useCallback(() => setShowMonitor(false), []);
   const [defaultDuration, setDefaultDuration] = useState(15);
-  const [defaultDurationDraft, setDefaultDurationDraft] = useState("15");
   const [inviteDuration, setInviteDuration] = useState(15);
-  const [isSavingDuration, setIsSavingDuration] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1272,7 +1334,6 @@ export default function AdminDashboard() {
         const data = await res.json();
         if (cancelled || typeof data.durationMinutes !== "number") return;
         setDefaultDuration(data.durationMinutes);
-        setDefaultDurationDraft(String(data.durationMinutes));
         setInviteDuration(data.durationMinutes);
       } catch {}
     })();
@@ -1280,31 +1341,6 @@ export default function AdminDashboard() {
       cancelled = true;
     };
   }, []);
-
-  const handleSaveDefaultDuration = async () => {
-    const minutes = Math.max(5, Math.min(180, parseInt(defaultDurationDraft) || 0));
-    if (!minutes) return;
-    setIsSavingDuration(true);
-    try {
-      const res = await adminFetch("/api/admin/interview_defaults", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ durationMinutes: minutes, adminEmail }),
-      });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "Failed to update interview duration.");
-      setDefaultDuration(result.durationMinutes);
-      setDefaultDurationDraft(String(result.durationMinutes));
-      setInviteDuration(result.durationMinutes);
-      setActionSuccess(`Default interview duration set to ${result.durationMinutes} minutes.`);
-      setTimeout(() => setActionSuccess(null), 3000);
-    } catch (err: any) {
-      setActionError(err.message || "Failed to update interview duration.");
-      setTimeout(() => setActionError(null), 5000);
-    } finally {
-      setIsSavingDuration(false);
-    }
-  };
 
   // Logs state
   const [systemLogs, setSystemLogs] = useState<any[]>([]);
@@ -1347,8 +1383,7 @@ export default function AdminDashboard() {
         setAuthenticated(true);
       }
       const flags = readAdminAccessFlags();
-      setCanViewEmployeePortal(flags.canViewEmployeePortal);
-      setCanChangePassword(flags.canChangePassword);
+      setAdminAccess(flags);
       setPinnedJdId(readPinnedJdId());
     }
     setAuthInitialized(true);
@@ -1372,13 +1407,9 @@ export default function AdminDashboard() {
         const res = await adminFetch(`/api/admin/auth/validate?email=${encodeURIComponent(adminEmail)}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) return;
-        const access = {
-          canViewEmployeePortal: data.canViewEmployeePortal !== false,
-          canChangePassword: Boolean(data.canChangePassword),
-        };
+        const access = accessFlagsFromPayload(data);
         storeAdminAccessFlags(access);
-        setCanViewEmployeePortal(access.canViewEmployeePortal);
-        setCanChangePassword(access.canChangePassword);
+        setAdminAccess(access);
       } catch {
         // Keep session flags if the access lookup fails.
       }
@@ -1394,11 +1425,27 @@ export default function AdminDashboard() {
     loadInitialData(adminEmail);
   }, [authenticated, adminEmail]);
 
+  const tabAllowed = useCallback(
+    (tab: typeof activeTab) => {
+      switch (tab) {
+        case "requirements": return adminPermissions.requirements;
+        case "employee": return adminPermissions.corpPool;
+        case "suitable":
+        case "unsuitable": return adminPermissions.candidates;
+        case "employee-portal": return adminPermissions.employeePortal;
+        case "outbox": return adminPermissions.emailOutbox;
+        default: return true;
+      }
+    },
+    [adminPermissions]
+  );
+  const anyTabAllowed = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).some(tabAllowed);
+
   useEffect(() => {
-    if (!canViewEmployeePortal && activeTab === "employee-portal") {
-      setActiveTab("requirements");
-    }
-  }, [canViewEmployeePortal, activeTab]);
+    if (tabAllowed(activeTab)) return;
+    const first = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).find(tabAllowed);
+    if (first) setActiveTab(first);
+  }, [tabAllowed, activeTab]);
 
   useEffect(() => {
     if (authenticated && adminEmail) {
@@ -1624,7 +1671,7 @@ export default function AdminDashboard() {
             return "all";
           });
         } else {
-          setSelectedJdId(email === "admin@infinite.com" ? "all" : "");
+          setSelectedJdId(canViewAllScreeningData ? "all" : "");
           setJdSavedText("");
           setJdText("");
         }
@@ -1649,6 +1696,7 @@ export default function AdminDashboard() {
   };
 
   const loadEmails = async (emailToUse?: string, opts?: { silent?: boolean }) => {
+    if (!readAdminAccessFlags().permissions.emailOutbox) return;
     const email = emailToUse || adminEmail;
     const seq = ++emailsFetchSeqRef.current;
     if (!opts?.silent) setIsEmailsLoading(true);
@@ -1767,7 +1815,9 @@ export default function AdminDashboard() {
           return;
         }
         if (revision === seenRevision) return;
+        const previousRevision = seenRevision;
         seenRevision = revision;
+        if (data.client && data.client === CLIENT_ID && revision === previousRevision + 1) return;
         const loaders = liveReloadRef.current;
         await Promise.all([
           loaders.loadEmployees({ fresh: true, silent: true }),
@@ -2329,11 +2379,8 @@ export default function AdminDashboard() {
     employeeName?: string
   ) => {
     const fileName = portalVideoFileName(employeeId, employeeName || employeeId);
-    const token =
-      typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : null;
-    const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : "";
     const res = await adminFetch(
-      `/api/admin/employee-tests/${testId}/video?filename=${encodeURIComponent(fileName)}&inline=1${tokenQuery}`
+      `/api/admin/employee-tests/${testId}/video?filename=${encodeURIComponent(fileName)}&inline=1`
     );
     if (!res.ok) {
       let message = "Recording not available for this test.";
@@ -2507,6 +2554,7 @@ export default function AdminDashboard() {
   const isCloudDocsIngest = process.env.NEXT_PUBLIC_CLOUD_DOCS_INGEST === "1";
 
   const loadLogs = async () => {
+    if (!readAdminAccessFlags().permissions.systemLogs) return;
     setIsSystemLogsLoading(true);
     try {
       const moduleParam = logsModuleFilter;
@@ -2518,6 +2566,7 @@ export default function AdminDashboard() {
       );
       if (Array.isArray(data?.logs)) {
         setSystemLogs(data.logs);
+        setSystemLogsTotal(typeof data.total === "number" ? data.total : data.logs.length);
       } else {
         console.warn("[admin] logs payload missing/timed out; keeping prior state");
       }
@@ -2562,6 +2611,7 @@ export default function AdminDashboard() {
       const sendJdId =
         selectedJdId && !selectedJdId.includes("@") ? selectedJdId : "all";
 
+      const startupPermissions = readAdminAccessFlags().permissions;
       const [jdData, resumesData, emailsData, employeesData, resetLogsData, logsData, settingsData] =
         await Promise.all([
           fetchJsonWithRetry(`/api/admin/jd?email=${encodeURIComponent(email)}`, {
@@ -2574,11 +2624,13 @@ export default function AdminDashboard() {
             retries: 1,
             label: "resumes",
           }),
-          fetchJsonWithRetry(`/api/admin/emails?email=${encodeURIComponent(email)}`, {
-            timeoutMs: 45000,
-            retries: 2,
-            label: "emails",
-          }),
+          startupPermissions.emailOutbox
+            ? fetchJsonWithRetry(`/api/admin/emails?email=${encodeURIComponent(email)}`, {
+                timeoutMs: 45000,
+                retries: 2,
+                label: "emails",
+              })
+            : Promise.resolve(null),
           fetchJsonWithRetry(
             `/api/admin/employees?activeJdId=${encodeURIComponent(sendJdId)}&fresh=1&email=${encodeURIComponent(email)}`,
             { timeoutMs: 60000, retries: 1, label: "employees" }
@@ -2588,10 +2640,12 @@ export default function AdminDashboard() {
             retries: 2,
             label: "reset_logs",
           }),
-          fetchJsonWithRetry(
-            `/api/admin/logs?module=${logsModuleFilter}&status=${logsStatusFilter}&search=${encodeURIComponent(logsSearch)}`,
-            { timeoutMs: 30000, retries: 2, label: "logs" }
-          ),
+          startupPermissions.systemLogs
+            ? fetchJsonWithRetry(
+                `/api/admin/logs?module=${logsModuleFilter}&status=${logsStatusFilter}&search=${encodeURIComponent(logsSearch)}`,
+                { timeoutMs: 30000, retries: 2, label: "logs" }
+              )
+            : Promise.resolve(null),
           fetchJsonWithRetry("/api/portal_settings", {
             timeoutMs: 20000,
             retries: 2,
@@ -2622,7 +2676,7 @@ export default function AdminDashboard() {
           setJdSavedText(initialJdText);
           setJdText(initialJdText);
         } else {
-          setSelectedJdId(email === "admin@infinite.com" ? "all" : "");
+          setSelectedJdId(canViewAllScreeningData ? "all" : "");
           setJdSavedText("");
           setJdText("");
         }
@@ -2668,6 +2722,7 @@ export default function AdminDashboard() {
       }
       if (Array.isArray(logsData?.logs)) {
         setSystemLogs(logsData.logs);
+        setSystemLogsTotal(typeof logsData.total === "number" ? logsData.total : logsData.logs.length);
       } else {
         console.warn("[admin] logs payload missing/timed out; retrying");
         logsRetrying = true;
@@ -2734,8 +2789,11 @@ export default function AdminDashboard() {
     }
   };
 
+  const refreshInFlightRef = useRef(false);
+
   const handleRefresh = async (type: "requirements" | "candidates" | "employees" | "interviews" | "all") => {
-    if (refreshingType) return;
+    if (refreshInFlightRef.current || refreshingType) return;
+    refreshInFlightRef.current = true;
     setRefreshingType(type);
     const steps =
       type === "all"
@@ -2756,18 +2814,14 @@ export default function AdminDashboard() {
         if (!res.ok || !result.success) {
           throw new Error(result.error || `Failed to refresh ${step}`);
         }
-        if (step === "requirements") {
-          await loadJobDescriptions();
-        } else if (step === "candidates" || step === "interviews") {
-          await loadResumes();
-        } else if (step === "employees") {
-          await loadEmployees({ fresh: true });
-        }
       }
-      if (type === "all") {
-        await loadEmails();
-      }
-      await loadLogs();
+      const reloads: Array<Promise<unknown>> = [];
+      if (steps.includes("requirements" as never)) reloads.push(loadJobDescriptions());
+      if (steps.some((step) => step === "candidates" || step === "interviews")) reloads.push(loadResumes());
+      if (steps.includes("employees" as never)) reloads.push(loadEmployees({ fresh: true }));
+      if (type === "all") reloads.push(loadEmails());
+      reloads.push(loadLogs());
+      await Promise.all(reloads);
       setPipelineStatus(`Ingestion: Idle (Last scan: ${new Date().toLocaleTimeString()})`);
       setActivityLogs(prev => [`[${new Date().toLocaleTimeString()}] Scan & refresh for ${type} completed.`, ...prev]);
       setActionSuccess(
@@ -2779,9 +2833,11 @@ export default function AdminDashboard() {
     } catch (err: any) {
       setPipelineStatus("Ingestion: Error");
       setActivityLogs(prev => [`[${new Date().toLocaleTimeString()}] Scan & refresh for ${type} failed: ${err.message}`, ...prev]);
+      void loadLogs();
       setActionError(`Scan & refresh of ${type} failed: ${err.message}`);
       setTimeout(() => setActionError(null), 5000);
     } finally {
+      refreshInFlightRef.current = false;
       setRefreshingType(null);
     }
   };
@@ -3013,18 +3069,12 @@ export default function AdminDashboard() {
           : Boolean(employeesRef.current.find((emp) => emp.employee_id === employeeId)?.shortlisted);
     const next = !previousValue;
     applyShortlistValues(new Map([[employeeId, next]]));
-    if (!next) {
-      setSelectedEmployeeIds((prev) => prev.filter((id) => id !== employeeId));
-    }
   };
 
   const handleBulkShortlistEmployees = (shortlisted: boolean, ids?: string[]) => {
     const targetIds = ids?.length ? ids : selectedEmployeeIds;
     if (!targetIds.length) return;
     applyShortlistValues(new Map(targetIds.map((id) => [id, shortlisted])));
-    setSelectedEmployeeIds((prev) =>
-      shortlisted ? [] : prev.filter((id) => !targetIds.includes(id))
-    );
     setActionSuccess(
       shortlisted
         ? `Shortlisted ${targetIds.length} ${targetIds.length === 1 ? "person" : "people"}.`
@@ -3087,11 +3137,25 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleExportEmployees = () => {
+  const handleExportEmployees = async () => {
     const sendJdId = (selectedJdId && !selectedJdId.includes("@")) ? selectedJdId : "all";
-    const jdQuery = `&activeJdId=${encodeURIComponent(sendJdId)}`;
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") || "" : "";
-    window.location.href = `/api/admin/employees?export=true${jdQuery}&token=${encodeURIComponent(token)}`;
+    const jdQuery = `activeJdId=${encodeURIComponent(sendJdId)}`;
+    try {
+      const res = await adminFetch(`/api/admin/employees?export=true&${jdQuery}`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "corp-pool-export.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to export Corp Pool.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   const handleUploadMatchScores = async (files: File[]) => {
@@ -3175,9 +3239,23 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDownloadSystemLogs = () => {
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") || "" : "";
-    window.location.href = `/api/admin/logs?module=${logsModuleFilter}&download=true&token=${encodeURIComponent(token)}`;
+  const handleDownloadSystemLogs = async () => {
+    try {
+      const res = await adminFetch(`/api/admin/logs?module=${logsModuleFilter}&download=true`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `system-logs-${logsModuleFilter}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to download system logs.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   const handleExportInterviews = async () => {
@@ -4454,14 +4532,23 @@ export default function AdminDashboard() {
     setShowDetails(true);
   };
 
-  const handleDownloadCV = (resumeId: string, filename: string) => {
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : "";
-    const link = document.createElement("a");
-    link.href = `/api/admin/resumes/${resumeId}/download?token=${encodeURIComponent(token || "")}`;
-    link.download = filename || "resume.txt";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownloadCV = async (resumeId: string, filename: string) => {
+    try {
+      const res = await adminFetch(`/api/admin/resumes/${resumeId}/download`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || "resume.txt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to download CV.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   // Drag and drop handlers for JDs in JD-to-BR converter
@@ -5245,8 +5332,8 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen app-canvas font-sans text-foreground transition-colors duration-300">
       <nav className="app-nav py-3.5 px-6">
-        <div className="max-w-full mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+        <div className="max-w-full mx-auto relative flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
             <div className="app-brand-mark">
               <ClipboardList className="w-[18px] h-[18px]" />
             </div>
@@ -5259,7 +5346,15 @@ export default function AdminDashboard() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+          {adminEmail && (
+            <div className="order-3 w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 text-center pointer-events-none px-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Signed in</p>
+              <p className="text-sm font-bold text-foreground truncate max-w-[min(100%,22rem)]" title={adminEmail}>
+                {adminEmail}
+              </p>
+            </div>
+          )}
+          <div className="flex items-center gap-2 md:gap-3 flex-wrap ml-auto">
             {canChangePassword && (
               <Button
                 variant="outline"
@@ -5275,6 +5370,7 @@ export default function AdminDashboard() {
                 <span className="inline sm:hidden">Password</span>
               </Button>
             )}
+            {adminPermissions.systemMonitor && (
             <Button
               variant="outline"
               size="sm"
@@ -5285,6 +5381,7 @@ export default function AdminDashboard() {
               <Activity className="w-3.5 h-3.5" />
               Monitor
             </Button>
+            )}
             <ThemeToggle />
             <Link href="/">
               <Button variant="outline" size="sm" className="gap-1.5 md:gap-2 text-xs">
@@ -5297,7 +5394,10 @@ export default function AdminDashboard() {
         </div>
       </nav>
 
-      {showMonitor && <SystemMonitor open={showMonitor} onClose={closeMonitor} fetcher={adminFetch} />}
+      {showMonitor && adminPermissions.systemMonitor && <SystemMonitor open={showMonitor} onClose={closeMonitor} fetcher={adminFetch} />}
+      {showAccessManager && canManagePortalConfig && (
+        <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
+      )}
 
       <main className="max-w-full mx-auto px-6 py-8 space-y-8">
         
@@ -5329,6 +5429,7 @@ export default function AdminDashboard() {
               
               {/* Tab Header Navigation */}
               <div className="flex overflow-x-auto scrollbar-none border-b border-border/70 bg-muted/40 shrink-0 w-full px-1 sm:px-2">
+                {adminPermissions.requirements && (
                 <button
                   onClick={() => setActiveTab("requirements")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5343,6 +5444,8 @@ export default function AdminDashboard() {
                     {isDashboardBootstrapping || isJdLoading ? "…" : filteredJds.length}
                   </Badge>
                 </button>
+                )}
+                {adminPermissions.corpPool && (
                 <button
                   onClick={() => setActiveTab("employee")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5356,6 +5459,8 @@ export default function AdminDashboard() {
                     {isDashboardBootstrapping && employees.length === 0 ? "…" : employees.length}
                   </Badge>
                 </button>
+                )}
+                {adminPermissions.candidates && (
                 <button
                   onClick={() => setActiveTab("suitable")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5369,6 +5474,8 @@ export default function AdminDashboard() {
                     {isDashboardBootstrapping || loading ? "…" : suitableCandidates.length}
                   </Badge>
                 </button>
+                )}
+                {adminPermissions.candidates && (
                 <button
                   onClick={() => setActiveTab("unsuitable")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5382,7 +5489,8 @@ export default function AdminDashboard() {
                     {isDashboardBootstrapping || loading ? "…" : unsuitableCandidates.length}
                   </Badge>
                 </button>
-                {canViewEmployeePortal && (
+                )}
+                {adminPermissions.employeePortal && (
                 <button
                   onClick={() => setActiveTab("employee-portal")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5400,6 +5508,7 @@ export default function AdminDashboard() {
                   </Badge>
                 </button>
                 )}
+                {adminPermissions.emailOutbox && (
                 <button
                   onClick={() => setActiveTab("outbox")}
                   className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
@@ -5414,11 +5523,16 @@ export default function AdminDashboard() {
                     {isDashboardBootstrapping || isEmailsLoading ? "…" : emails.length}
                   </Badge>
                 </button>
+                )}
               </div>
 
               {/* Candidates List Container */}
               <div className="p-6">
-                {isTabContentLoading ? (
+                {!anyTabAllowed ? (
+                  <div className="py-16 text-center text-sm text-muted-foreground">
+                    Your account has not been given access to any dashboard tabs yet. Ask the main admin to tick the sections you need under Portal Config.
+                  </div>
+                ) : isTabContentLoading ? (
                   <ScreeningTableSkeleton
                     variant={
                       activeTab === "requirements"
@@ -5437,7 +5551,7 @@ export default function AdminDashboard() {
                       <div className="w-full xl:flex-1 min-w-0 relative">
                         <input
                           type="text"
-                          placeholder="Search requirements..."
+                          placeholder="Search Requirements (BR / JD)..."
                           value={requirementSearch}
                           onChange={(e) => setRequirementSearch(e.target.value)}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
@@ -6454,7 +6568,7 @@ export default function AdminDashboard() {
                         <div className="w-full sm:flex-1 relative">
                           <input
                             type="text"
-                            placeholder="Search name, ID, product, email..."
+                            placeholder="Search Employee Portal (name, ID, product, email)..."
                             value={testResultsSearch}
                             onChange={(e) => setTestResultsSearch(e.target.value)}
                             className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
@@ -7427,7 +7541,7 @@ export default function AdminDashboard() {
                       <div className="relative shrink-0">
                         <input
                           type="text"
-                          placeholder="Search outbox logs..."
+                          placeholder="Search Email Outbox..."
                           value={outboxSearch}
                           onChange={(e) => setOutboxSearch(e.target.value)}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
@@ -7580,7 +7694,7 @@ export default function AdminDashboard() {
                         <div className="relative shrink-0">
                           <input
                             type="text"
-                            placeholder={`Search ${activeTab === 'suitable' ? 'suitable' : 'unsuitable'} candidates...`}
+                            placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
                             value={candidateSearch}
                             onChange={(e) => setCandidateSearch(e.target.value)}
                             className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
@@ -7922,6 +8036,7 @@ export default function AdminDashboard() {
         </Card>
 
         {/* Admin Controls Section */}
+        {adminPermissions.adminControls && (
         <div className="mt-8 space-y-4">
           <div className="flex items-center gap-3 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-cyan-400 via-violet-500 to-fuchsia-400" />
@@ -7961,8 +8076,19 @@ export default function AdminDashboard() {
                       ? "Idle"
                       : "Scanning"}
                 </Badge>
+                <span className="max-w-[180px] text-right text-[9px] font-semibold leading-snug text-slate-400" title={pipelineStatus}>
+                  {pipelineStatus}
+                </span>
               </div>
             </div>
+
+            {activityLogs.length > 0 && (
+              <div className="mb-3 max-h-24 overflow-y-auto rounded-xl bg-slate-950 px-3 py-2 font-mono text-[10px] leading-4 text-slate-300">
+                {activityLogs.slice(0, 6).map((line, index) => (
+                  <div key={`${line}-${index}`}>{line}</div>
+                ))}
+              </div>
+            )}
 
             <div className="space-y-4 flex-1 flex flex-col">
               {jds.length > 0 && (
@@ -7971,7 +8097,7 @@ export default function AdminDashboard() {
                     Active Requirement (JD / BR)
                   </label>
                   <div className="flex gap-2">
-                    {adminEmail === "admin@infinite.com" ? (
+                    {canViewAllScreeningData ? (
                       <select
                         value={selectedSelectValue}
                         onChange={(e) => {
@@ -8015,7 +8141,7 @@ export default function AdminDashboard() {
                         {adminEmail}
                       </div>
                     )}
-                    {selectedJdId && selectedJdId !== "all" && adminEmail === "admin@infinite.com" && (
+                    {selectedJdId && selectedJdId !== "all" && canViewAllScreeningData && (
                       <Button
                         variant="ghost"
                         onClick={() => handleDeleteJd(selectedJdId)}
@@ -8178,11 +8304,11 @@ export default function AdminDashboard() {
                     onChange={handleUnifiedUpload}
                     className="hidden"
                     accept={
-                      uploadCategory === 'resume' ? '.pdf,.doc,.docx,.zip,.csv,.xlsx,.xls' :
-                      uploadCategory === 'jd' ? '.pdf,.doc,.docx,.txt,.html,.htm' :
-                      uploadCategory === 'br' ? '.xlsx,.csv' :
-                      uploadCategory === 'portal-mapping' ? '.xlsx,.xls' :
-                      '.csv,.xlsx,.xls,.pdf,.doc,.docx,.zip'
+                      uploadCategory === 'resume' ? acceptTypes('pdf', 'word', 'zip', 'csv', 'xlsx', 'xls') :
+                      uploadCategory === 'jd' ? acceptTypes('pdf', 'word', 'txt', 'html') :
+                      uploadCategory === 'br' ? acceptTypes('xlsx', 'csv') :
+                      uploadCategory === 'portal-mapping' ? acceptTypes('xlsx', 'xls') :
+                      acceptTypes('csv', 'xlsx', 'xls', 'pdf', 'word', 'zip')
                     }
                   />
                 </div>
@@ -8225,7 +8351,7 @@ export default function AdminDashboard() {
                 ref={matchScoreInputRef}
                 className="hidden"
                 multiple
-                accept=".xlsx,.xls,.csv"
+                accept={acceptTypes('xlsx', 'xls', 'csv')}
                 onChange={(e) => {
                   const files = Array.from(e.target.files || []);
                   if (files.length) void handleUploadMatchScores(files);
@@ -8234,7 +8360,7 @@ export default function AdminDashboard() {
             </div>
           </Card>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1 items-stretch">
+          <div className={`grid grid-cols-1 ${canManagePortalConfig ? "sm:grid-cols-2" : ""} gap-4 flex-1 items-stretch`}>
           {/* RESET CANDIDATE SESSION CARD */}
           <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-amber-500 to-orange-500" />
@@ -8283,6 +8409,7 @@ export default function AdminDashboard() {
           </Card>
 
           {/* PORTAL TAB CONFIGURATION CARD */}
+          {canManagePortalConfig && (
           <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-violet-500 to-indigo-500" />
 
@@ -8315,41 +8442,30 @@ export default function AdminDashboard() {
                   {portalSettings.showSystemLogsViewer ? "ENABLED" : "DISABLED"}
                 </Button>
               </div>
-
               <div className="flex items-center justify-between gap-3 p-3 border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/30 rounded-xl">
                 <div className="space-y-0.5 min-w-0">
-                  <div className="text-xs font-bold text-foreground">Interview Duration</div>
-                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Default minutes for candidate interviews (5-180)</div>
+                  <div className="text-xs font-bold text-foreground">Admin Panel Access</div>
+                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Add admin emails and tick what each one can see</div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <input
-                    type="number"
-                    min={5}
-                    max={180}
-                    value={defaultDurationDraft}
-                    onChange={(e) => setDefaultDurationDraft(e.target.value)}
-                    className="w-16 rounded-lg border border-border bg-card px-2 py-1 text-xs font-bold text-slate-905 dark:text-slate-100 outline-none focus:border-indigo-500"
-                    aria-label="Default interview duration in minutes"
-                  />
-                  <Button
-                    onClick={handleSaveDefaultDuration}
-                    disabled={isSavingDuration || String(defaultDuration) === defaultDurationDraft}
-                    size="sm"
-                    className="h-7 px-3 text-[10px] font-black rounded-lg"
-                  >
-                    {isSavingDuration ? "SAVING" : "SAVE"}
-                  </Button>
-                </div>
+                <Button
+                  onClick={() => setShowAccessManager(true)}
+                  size="sm"
+                  className="h-7 px-3 text-[10px] font-black rounded-lg border shrink-0 bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
+                >
+                  MANAGE
+                </Button>
               </div>
             </div>
           </Card>
+          )}
           </div>
           </div>
           </div>
         </div>
+        )}
 
         {/* System Logs Section */}
-        {portalSettings.showSystemLogsViewer && (
+        {portalSettings.showSystemLogsViewer && adminPermissions.systemLogs && (
         <Card className="p-6 border-indigo-150 dark:border-slate-800 shadow-md bg-card rounded-3xl relative overflow-hidden mt-8">
           <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500" />
           
@@ -8358,7 +8474,10 @@ export default function AdminDashboard() {
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-2 border-b border-border shrink-0">
               <div>
                 <h3 className="text-sm font-black text-slate-855 dark:text-slate-100 leading-none">System Logs & Ingestion Pipeline Viewer</h3>
-                <p className="text-[10px] text-slate-400 font-semibold mt-1">Real-time automated logging and folder synchronization audits</p>
+                <p className="text-[10px] text-slate-400 font-semibold mt-1">
+                  Sign-ins, admin actions, employee tests, candidate interviews, emails, and ingestion scans. Use Ingestion pipeline to see folder scans and uploads.
+                  {systemLogsTotal > systemLogs.length ? ` · showing the newest ${systemLogs.length} of ${systemLogsTotal}` : ""}
+                </p>
               </div>
               
               <div className="flex gap-2">
@@ -8407,6 +8526,9 @@ export default function AdminDashboard() {
                   <option value="employee">👥 Employee Pool</option>
                   <option value="interview">📝 Interviews Sync</option>
                   <option value="email">✉️ Emails outbox</option>
+                  <option value="ingestion">📥 Ingestion pipeline</option>
+                  <option value="auth">🔐 Sign-in</option>
+                  <option value="audit">🛡️ Admin actions</option>
                   <option value="error">⚠️ System Errors</option>
                 </select>
 
@@ -8434,14 +8556,17 @@ export default function AdminDashboard() {
               ) : (
                 <div className="overflow-y-auto max-h-[350px] space-y-2 pr-1 scrollbar-thin scrollbar-thumb-slate-800">
                   {systemLogs.map((log, idx) => {
-                    const isError = log.status.toLowerCase() === 'failed' || log.status.toLowerCase() === 'error';
-                    const isWarning = log.status.toLowerCase() === 'warning';
+                    const status = String(log.status || "success").toLowerCase();
+                    const isError = status === "failed" || status === "error";
+                    const isWarning = status === "warning";
+                    const when = log.timestamp ? new Date(log.timestamp) : null;
+                    const whenLabel = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "time not recorded";
 
                     return (
-                      <div key={idx} className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 gap-1.5 sm:gap-4 hover:bg-slate-900/20 px-1 py-0.5 rounded transition-all">
+                      <div key={`${log.timestamp}-${log.action}-${idx}`} className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-900/60 pb-1.5 last:border-0 last:pb-0 gap-1.5 sm:gap-4 hover:bg-slate-900/20 px-1 py-0.5 rounded transition-all">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-slate-650 font-bold shrink-0">
-                            [{new Date(log.timestamp).toLocaleString()}]
+                            [{whenLabel}]
                           </span>
                           <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shrink-0 ${
                             isError ? "bg-red-955/65 text-red-400 border border-red-900/50" :
@@ -8449,6 +8574,13 @@ export default function AdminDashboard() {
                             "bg-slate-900 text-slate-400 border border-slate-800/80"
                           }`}>
                             {log.module}
+                          </span>
+                          <span
+                            className={`shrink-0 font-bold ${log.actor ? "text-sky-400" : "text-slate-600 italic"}`}
+                            title={log.ip ? `IP ${log.ip}` : undefined}
+                          >
+                            {log.actor ? `👤 ${log.actor}` : "👤 not recorded"}
+                            {log.ip ? <span className="text-slate-600 font-normal"> ({log.ip})</span> : null}
                           </span>
                           <span className="text-slate-200 font-black shrink-0">
                             {log.action}
@@ -8606,10 +8738,13 @@ export default function AdminDashboard() {
 
             {/* Email Body Content */}
             <div className="p-6 bg-slate-100 dark:bg-slate-950 flex flex-col">
-              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-inner max-h-[50vh] overflow-y-auto">
-                <div 
-                  className="p-6 overflow-y-auto text-foreground"
-                  dangerouslySetInnerHTML={{ __html: selectedEmail.htmlBody }}
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-inner max-h-[50vh]">
+                <iframe
+                  title="Email preview"
+                  sandbox=""
+                  referrerPolicy="no-referrer"
+                  srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank" rel="noopener noreferrer"><style>body{font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;margin:16px;word-break:break-word;}img{max-width:100%;height:auto;}</style></head><body>${String(selectedEmail.htmlBody || "").replace(/<\/script/gi, "<\\/script")}</body></html>`}
+                  className="w-full min-h-[40vh] border-0 bg-white"
                 />
               </div>
             </div>
@@ -9247,7 +9382,7 @@ export default function AdminDashboard() {
                   <label className="block text-xs font-bold text-muted-foreground">JD File</label>
                   <input
                     type="file"
-                    accept=".pdf,.doc,.docx,.txt,.html,.htm"
+                    accept={acceptTypes('pdf', 'word', 'txt', 'html')}
                     onChange={(e) => {
                       if (e.target.files && e.target.files[0]) {
                         setModalFile(e.target.files[0]);
@@ -9673,7 +9808,7 @@ export default function AdminDashboard() {
                     type="file" 
                     id="jd-to-br-selector" 
                     multiple 
-                    accept=".docx,.pdf" 
+                    accept={acceptTypes('word', 'pdf')} 
                     className="hidden" 
                     onChange={handleJdToBrSelect}
                     onClick={(e) => e.stopPropagation()}
@@ -9732,7 +9867,7 @@ export default function AdminDashboard() {
                     <input 
                       type="file" 
                       id="jd-to-br-excel-selector" 
-                      accept=".xlsx" 
+                      accept={acceptTypes('xlsx')} 
                       className="hidden" 
                       onChange={handleJdToBrExcelSelect}
                     />
