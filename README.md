@@ -4,6 +4,12 @@ The TalentScope web interface is built with **Next.js 14 (App Router)**, **React
 
 It acts as the single-origin client interface for candidates, employees, and administrators. All API requests under `/api/*` are transparently reverse-proxied by Next.js to the Python FastAPI backend (`BACKEND_URL`, default `http://127.0.0.1:8000`).
 
+## Azure production deployment
+
+The `UI - Deploy to Azure Production` GitHub Actions workflow is manual-only. Run it from the `main` branch and confirm the production input; pushes do not deploy. Type-checking runs before deployment on the `self-hosted`, `linux`, and `icsbetintapp01` runner.
+
+The runner syncs this repository to `/opt/talentscope/talentscope-UI/ui`, then rebuilds and verifies the existing `ui` Compose service. It uses the current Compose configuration and port bindings; production settings remain on the VM in `/opt/talentscope/talentscope-UI/.env.azure`.
+
 ---
 
 ## 🏗️ Architecture & Features
