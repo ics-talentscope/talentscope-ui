@@ -1131,6 +1131,8 @@ export default function AdminDashboard() {
   const [adminAccess, setAdminAccess] = useState<AdminAccessFlags>(() => readAdminAccessFlags());
   const adminPermissions = adminAccess.permissions;
   const isSuperAdmin = adminAccess.isSuperAdmin;
+  const canViewAllScreeningData = isSuperAdmin || adminPermissions.allScreeningData;
+  const canManagePortalConfig = isSuperAdmin || adminPermissions.portalConfig;
   const canViewEmployeePortal = adminPermissions.employeePortal;
   const canChangePassword = adminPermissions.changePassword;
   const [showAccessManager, setShowAccessManager] = useState(false);
@@ -1669,7 +1671,7 @@ export default function AdminDashboard() {
             return "all";
           });
         } else {
-          setSelectedJdId(email === "admin@infinite.com" ? "all" : "");
+          setSelectedJdId(canViewAllScreeningData ? "all" : "");
           setJdSavedText("");
           setJdText("");
         }
@@ -2377,11 +2379,8 @@ export default function AdminDashboard() {
     employeeName?: string
   ) => {
     const fileName = portalVideoFileName(employeeId, employeeName || employeeId);
-    const token =
-      typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : null;
-    const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : "";
     const res = await adminFetch(
-      `/api/admin/employee-tests/${testId}/video?filename=${encodeURIComponent(fileName)}&inline=1${tokenQuery}`
+      `/api/admin/employee-tests/${testId}/video?filename=${encodeURIComponent(fileName)}&inline=1`
     );
     if (!res.ok) {
       let message = "Recording not available for this test.";
@@ -2677,7 +2676,7 @@ export default function AdminDashboard() {
           setJdSavedText(initialJdText);
           setJdText(initialJdText);
         } else {
-          setSelectedJdId(email === "admin@infinite.com" ? "all" : "");
+          setSelectedJdId(canViewAllScreeningData ? "all" : "");
           setJdSavedText("");
           setJdText("");
         }
@@ -3138,11 +3137,25 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleExportEmployees = () => {
+  const handleExportEmployees = async () => {
     const sendJdId = (selectedJdId && !selectedJdId.includes("@")) ? selectedJdId : "all";
-    const jdQuery = `&activeJdId=${encodeURIComponent(sendJdId)}`;
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") || "" : "";
-    window.location.href = `/api/admin/employees?export=true${jdQuery}&token=${encodeURIComponent(token)}`;
+    const jdQuery = `activeJdId=${encodeURIComponent(sendJdId)}`;
+    try {
+      const res = await adminFetch(`/api/admin/employees?export=true&${jdQuery}`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "corp-pool-export.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to export Corp Pool.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   const handleUploadMatchScores = async (files: File[]) => {
@@ -3226,9 +3239,23 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleDownloadSystemLogs = () => {
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") || "" : "";
-    window.location.href = `/api/admin/logs?module=${logsModuleFilter}&download=true&token=${encodeURIComponent(token)}`;
+  const handleDownloadSystemLogs = async () => {
+    try {
+      const res = await adminFetch(`/api/admin/logs?module=${logsModuleFilter}&download=true`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `system-logs-${logsModuleFilter}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to download system logs.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   const handleExportInterviews = async () => {
@@ -4505,14 +4532,23 @@ export default function AdminDashboard() {
     setShowDetails(true);
   };
 
-  const handleDownloadCV = (resumeId: string, filename: string) => {
-    const token = typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : "";
-    const link = document.createElement("a");
-    link.href = `/api/admin/resumes/${resumeId}/download?token=${encodeURIComponent(token || "")}`;
-    link.download = filename || "resume.txt";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownloadCV = async (resumeId: string, filename: string) => {
+    try {
+      const res = await adminFetch(`/api/admin/resumes/${resumeId}/download`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || "resume.txt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to download CV.");
+      setTimeout(() => setActionError(null), 4000);
+    }
   };
 
   // Drag and drop handlers for JDs in JD-to-BR converter
@@ -5296,8 +5332,8 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen app-canvas font-sans text-foreground transition-colors duration-300">
       <nav className="app-nav py-3.5 px-6">
-        <div className="max-w-full mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+        <div className="max-w-full mx-auto relative flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
             <div className="app-brand-mark">
               <ClipboardList className="w-[18px] h-[18px]" />
             </div>
@@ -5310,7 +5346,15 @@ export default function AdminDashboard() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+          {adminEmail && (
+            <div className="order-3 w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 text-center pointer-events-none px-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Signed in</p>
+              <p className="text-sm font-bold text-foreground truncate max-w-[min(100%,22rem)]" title={adminEmail}>
+                {adminEmail}
+              </p>
+            </div>
+          )}
+          <div className="flex items-center gap-2 md:gap-3 flex-wrap ml-auto">
             {canChangePassword && (
               <Button
                 variant="outline"
@@ -5351,7 +5395,7 @@ export default function AdminDashboard() {
       </nav>
 
       {showMonitor && adminPermissions.systemMonitor && <SystemMonitor open={showMonitor} onClose={closeMonitor} fetcher={adminFetch} />}
-      {showAccessManager && isSuperAdmin && (
+      {showAccessManager && canManagePortalConfig && (
         <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
       )}
 
@@ -8053,7 +8097,7 @@ export default function AdminDashboard() {
                     Active Requirement (JD / BR)
                   </label>
                   <div className="flex gap-2">
-                    {adminEmail === "admin@infinite.com" ? (
+                    {canViewAllScreeningData ? (
                       <select
                         value={selectedSelectValue}
                         onChange={(e) => {
@@ -8097,7 +8141,7 @@ export default function AdminDashboard() {
                         {adminEmail}
                       </div>
                     )}
-                    {selectedJdId && selectedJdId !== "all" && adminEmail === "admin@infinite.com" && (
+                    {selectedJdId && selectedJdId !== "all" && canViewAllScreeningData && (
                       <Button
                         variant="ghost"
                         onClick={() => handleDeleteJd(selectedJdId)}
@@ -8316,7 +8360,7 @@ export default function AdminDashboard() {
             </div>
           </Card>
 
-          <div className={`grid grid-cols-1 ${isSuperAdmin ? "sm:grid-cols-2" : ""} gap-4 flex-1 items-stretch`}>
+          <div className={`grid grid-cols-1 ${canManagePortalConfig ? "sm:grid-cols-2" : ""} gap-4 flex-1 items-stretch`}>
           {/* RESET CANDIDATE SESSION CARD */}
           <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-amber-500 to-orange-500" />
@@ -8365,7 +8409,7 @@ export default function AdminDashboard() {
           </Card>
 
           {/* PORTAL TAB CONFIGURATION CARD */}
-          {isSuperAdmin && (
+          {canManagePortalConfig && (
           <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-violet-500 to-indigo-500" />
 
@@ -8694,10 +8738,13 @@ export default function AdminDashboard() {
 
             {/* Email Body Content */}
             <div className="p-6 bg-slate-100 dark:bg-slate-950 flex flex-col">
-              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-inner max-h-[50vh] overflow-y-auto">
-                <div 
-                  className="p-6 overflow-y-auto text-foreground"
-                  dangerouslySetInnerHTML={{ __html: selectedEmail.htmlBody }}
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-inner max-h-[50vh]">
+                <iframe
+                  title="Email preview"
+                  sandbox=""
+                  referrerPolicy="no-referrer"
+                  srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank" rel="noopener noreferrer"><style>body{font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;margin:16px;word-break:break-word;}img{max-width:100%;height:auto;}</style></head><body>${String(selectedEmail.htmlBody || "").replace(/<\/script/gi, "<\\/script")}</body></html>`}
+                  className="w-full min-h-[40vh] border-0 bg-white"
                 />
               </div>
             </div>

@@ -381,11 +381,22 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
 
           {!showPasswordPrompt ? (
             <div className="flex flex-col gap-3 pt-2">
+              {ssoEnabled && (
+                <Button
+                  onClick={() => window.location.assign("/api/employee/auth/saml?target=admin")}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md shadow-indigo-500/30 transition-all font-bold gap-2"
+                >
+                  Yes — Microsoft SSO
+                </Button>
+              )}
               <Button
                 onClick={() => setShowPasswordPrompt(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md shadow-indigo-500/30 transition-all font-bold"
+                variant={ssoEnabled ? "outline" : "default"}
+                className={ssoEnabled
+                  ? "w-full rounded-xl border-border font-bold"
+                  : "bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md shadow-indigo-500/30 transition-all font-bold"}
               >
-                Yes
+                {ssoEnabled ? "Yes — use password" : "Yes"}
               </Button>
               <Button
                 variant="outline"
@@ -434,6 +445,16 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
                 >
                   Verify
                 </Button>
+                {ssoEnabled && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => window.location.assign("/api/employee/auth/saml?target=admin")}
+                    className="w-full rounded-xl border-border font-bold"
+                  >
+                    Sign in with Microsoft instead
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="outline"
@@ -552,23 +573,33 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
             </div>
             <form onSubmit={handleReauthSubmit} className="space-y-3">
               <input type="email" name="email" autoComplete="username" value={email} readOnly hidden tabIndex={-1} aria-hidden="true" />
+              {ssoEnabled && (
+                <Button
+                  type="button"
+                  onClick={() => window.location.assign("/api/employee/auth/saml?target=admin")}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold gap-2"
+                >
+                  Sign in with Microsoft
+                </Button>
+              )}
               <PasswordInput
                 id="admin-reauth-password"
                 name="password"
                 autoComplete="current-password"
                 value={reauthPassword}
-                autoFocus
+                autoFocus={!ssoEnabled}
                 onChange={(event) => setReauthPassword(event.target.value)}
+                placeholder={ssoEnabled ? "Or enter password" : undefined}
                 className="w-full rounded-xl border border-indigo-250 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 py-3 text-foreground focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition"
-                required
+                required={!ssoEnabled}
               />
               {reauthError && (
                 <div className="rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 px-4 py-2 text-xs text-red-600 dark:text-red-400">
                   {reauthError}
                 </div>
               )}
-              <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold">
-                Sign in
+              <Button type="submit" variant={ssoEnabled ? "outline" : "default"} className="w-full rounded-xl font-bold">
+                {ssoEnabled ? "Sign in with password" : "Sign in"}
               </Button>
               <Button type="button" variant="outline" onClick={() => handleLogout()} className="w-full rounded-xl border-border text-primary hover:bg-secondary font-bold">
                 Sign out

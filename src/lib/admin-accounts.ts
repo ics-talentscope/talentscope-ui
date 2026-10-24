@@ -9,6 +9,7 @@ export const ADMIN_PERMISSIONS = [
   { key: "adminControls", label: "Admin Controls (ingestion, uploads, match scores, reset candidate)" },
   { key: "systemLogs", label: "System Logs viewer" },
   { key: "systemMonitor", label: "System Monitor" },
+  { key: "portalConfig", label: "Portal Config (feature toggles & manage who has admin access)" },
   { key: "changePassword", label: "Change their own password" },
 ] as const;
 
@@ -31,11 +32,22 @@ export type AdminAccessFlags = Omit<AdminAccess, "email">;
 
 const ACCESS_KEY = "admin-access";
 
-/** Reads the login / validate response; responses from before permissions existed only carry the two old flags. */
+/** Reads the login / validate response; missing payload fails closed (no tabs). */
 export function accessFlagsFromPayload(data: any): AdminAccessFlags {
-  const permissions: AdminPermissions = { ...allPermissions(true), ...(data?.permissions ?? {}) };
+  const hasPayload = data && typeof data === "object" && (data.permissions || data.isSuperAdmin === true || data.email);
+  const permissions: AdminPermissions = {
+    ...allPermissions(false),
+    ...(hasPayload ? (data.permissions ?? {}) : {}),
+  };
+  if (data?.isSuperAdmin === true) {
+    Object.assign(permissions, allPermissions(true), { changePassword: false });
+  }
   if (data?.canViewEmployeePortal === false) permissions.employeePortal = false;
-  permissions.changePassword = data?.permissions ? Boolean(permissions.changePassword) : data?.canChangePassword === true;
+  if (data?.permissions) {
+    permissions.changePassword = Boolean(permissions.changePassword);
+  } else if (hasPayload) {
+    permissions.changePassword = data?.canChangePassword === true;
+  }
   return {
     isSuperAdmin: data?.isSuperAdmin === true,
     permissions,
@@ -55,7 +67,7 @@ export function readAdminAccessFlags(): AdminAccessFlags {
     const raw = window.sessionStorage.getItem(ACCESS_KEY);
     if (raw) return accessFlagsFromPayload(JSON.parse(raw));
   } catch {
-    // fall through to defaults; the dashboard re-validates on load
+    // fall through to deny-by-default
   }
   return accessFlagsFromPayload(null);
 }

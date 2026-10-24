@@ -7,7 +7,14 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { ADMIN_PERMISSIONS, allPermissions, type AdminPermission, type AdminPermissions } from "@/lib/admin-accounts";
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
-type AdminRow = { email: string; hasPassword: boolean; permissions: AdminPermissions };
+type AdminRow = { email: string; hasPassword: boolean; permissions: AdminPermissions; aliases?: string[] };
+
+function parseAliasInput(raw: string): string[] {
+  return raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes("@"));
+}
 
 const NEW_ADMIN_DEFAULTS: AdminPermissions = {
   ...allPermissions(false),
@@ -50,13 +57,24 @@ function PermissionTicks({
 
 function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetcher; onSaved: (admins: AdminRow[], message: string) => void }) {
   const [permissions, setPermissions] = useState<AdminPermissions>(admin.permissions);
+  const [aliasesText, setAliasesText] = useState((admin.aliases || []).join(", "));
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState<"save" | "remove" | null>(null);
   const [error, setError] = useState("");
 
-  useEffect(() => setPermissions(admin.permissions), [admin.permissions]);
+  useEffect(() => {
+    setPermissions(admin.permissions);
+    setAliasesText((admin.aliases || []).join(", "));
+  }, [admin.permissions, admin.aliases]);
 
-  const dirty = password.length > 0 || ADMIN_PERMISSIONS.some(({ key }) => permissions[key] !== admin.permissions[key]);
+  const nextAliases = parseAliasInput(aliasesText);
+  const aliasesDirty =
+    [...nextAliases].sort().join("|") !==
+    [...(admin.aliases || [])].map((a) => a.toLowerCase()).sort().join("|");
+  const dirty =
+    password.length > 0 ||
+    aliasesDirty ||
+    ADMIN_PERMISSIONS.some(({ key }) => permissions[key] !== admin.permissions[key]);
 
   const save = async () => {
     setBusy("save");
@@ -65,7 +83,12 @@ function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetc
       const res = await fetcher("/api/admin/admin-accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: admin.email, permissions, password: password || undefined }),
+        body: JSON.stringify({
+          email: admin.email,
+          permissions,
+          password: password || undefined,
+          aliases: parseAliasInput(aliasesText),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Could not save changes.");
@@ -79,7 +102,7 @@ function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetc
   };
 
   const remove = async () => {
-    if (!window.confirm(`Remove admin panel access for ${admin.email}? They will no longer be able to sign in.`)) return;
+    if (!window.confirm(`Remove admin panel access for ${admin.email}? They will no longer be able to sign in with password or Microsoft SSO.`)) return;
     setBusy("remove");
     setError("");
     try {
@@ -98,7 +121,11 @@ function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetc
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-sm font-bold text-foreground truncate">{admin.email}</div>
-          {!admin.hasPassword && <div className="text-[11px] text-amber-600 font-semibold">No password set — they cannot sign in until you set one.</div>}
+          <div className="text-[11px] text-muted-foreground font-semibold">
+            {admin.hasPassword
+              ? "Can sign in with Microsoft SSO or password."
+              : "SSO only — can sign in with Microsoft (no password set)."}
+          </div>
         </div>
         <Button
           variant="outline"
@@ -117,6 +144,24 @@ function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetc
         value={permissions}
         onChange={(key, checked) => setPermissions((prev) => ({ ...prev, [key]: checked }))}
       />
+
+      <div className="space-y-1">
+        <label htmlFor={`${admin.email}-aliases`} className="block text-[10px] font-black text-slate-500 uppercase tracking-wider">
+          Microsoft / Entra aliases (optional)
+        </label>
+        <input
+          id={`${admin.email}-aliases`}
+          type="text"
+          autoComplete="off"
+          value={aliasesText}
+          onChange={(e) => setAliasesText(e.target.value)}
+          placeholder="e.g. aryan.mishra@infinite.com if account email differs"
+          className={inputClass}
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Comma-separated. SSO matches these UPNs to this admin row.
+        </p>
+      </div>
 
       <div className="flex flex-col sm:flex-row sm:items-end gap-3 pt-1">
         <div className="flex-1 space-y-1">
@@ -153,6 +198,7 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
   const [notice, setNotice] = useState("");
 
   const [newEmail, setNewEmail] = useState("");
+  const [newAliases, setNewAliases] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPermissions, setNewPermissions] = useState<AdminPermissions>(NEW_ADMIN_DEFAULTS);
   const [adding, setAdding] = useState(false);
@@ -198,16 +244,29 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
       if (admins?.some((a) => a.email === email)) {
         throw new Error("This email already has access — change its ticks in the list below.");
       }
+      if (newPassword && newPassword.length < 8) {
+        throw new Error("Password must be at least 8 characters, or leave it blank for Microsoft SSO only.");
+      }
       const res = await fetcher("/api/admin/admin-accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, permissions: newPermissions, password: newPassword }),
+        body: JSON.stringify({
+          email,
+          permissions: newPermissions,
+          password: newPassword || undefined,
+          aliases: parseAliasInput(newAliases),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Could not add this admin.");
       setAdmins(data.admins);
-      setNotice(`${email} can now sign in to the admin panel.`);
+      setNotice(
+        newPassword
+          ? `${email} can now sign in with Microsoft SSO or password.`
+          : `${email} can now sign in with Microsoft SSO (no password set).`,
+      );
       setNewEmail("");
+      setNewAliases("");
       setNewPassword("");
       setNewPermissions(NEW_ADMIN_DEFAULTS);
     } catch (err: any) {
@@ -225,7 +284,7 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
           <div>
             <h2 className="text-base font-black text-foreground leading-none">Admin Panel Access</h2>
             <p className="text-[11px] text-muted-foreground mt-1">
-              Choose who can sign in to this admin panel and tick what each person can see.
+              Use each person&apos;s exact Microsoft / Entra UPN. Add aliases if their mailbox and sign-in email differ. Password optional; ticks control what they see.
             </p>
           </div>
         </div>
@@ -238,7 +297,8 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
         <div className="max-w-4xl mx-auto space-y-6">
           {superAdmin && (
             <p className="text-xs text-muted-foreground">
-              <span className="font-bold text-foreground">{superAdmin}</span> is the main admin and always has full access, including this screen.
+              <span className="font-bold text-foreground">{superAdmin}</span> is the main admin and always has full access.
+              Tick <span className="font-semibold text-foreground">Portal Config</span> to let someone else manage this screen.
               Changes apply the next time each admin opens or refreshes the dashboard.
             </p>
           )}
@@ -256,7 +316,7 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label htmlFor="new-admin-email" className="block text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                  Email
+                  Microsoft / Entra email (exact UPN)
                 </label>
                 <input
                   id="new-admin-email"
@@ -271,18 +331,32 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
               </div>
               <div className="space-y-1">
                 <label htmlFor="new-admin-password" className="block text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                  Password (at least 8 characters)
+                  Password (optional — leave blank for Microsoft SSO only)
                 </label>
                 <PasswordInput
                   id="new-admin-password"
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Optional backup password (min 8 chars)"
                   className={inputClass}
-                  required
-                  minLength={8}
+                  minLength={newPassword ? 8 : undefined}
                 />
               </div>
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="new-admin-aliases" className="block text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                Entra aliases (optional)
+              </label>
+              <input
+                id="new-admin-aliases"
+                type="text"
+                autoComplete="off"
+                value={newAliases}
+                onChange={(e) => setNewAliases(e.target.value)}
+                placeholder="Other UPNs that should map to this account"
+                className={inputClass}
+              />
             </div>
             <div className="text-[10px] font-black text-slate-500 uppercase tracking-wider pt-1">They can see</div>
             <PermissionTicks
