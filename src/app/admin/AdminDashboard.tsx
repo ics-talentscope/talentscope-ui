@@ -574,7 +574,11 @@ function portalVideoTest(account: {
   const recordingReady = (test: {
     status?: string;
     hasRecording?: boolean;
-  }) => test.status === "completed" && Boolean(test.hasRecording);
+    videoUrl?: string | null;
+    proctoring?: { videoUploaded?: boolean } | null;
+  }) =>
+    test.status === "completed" &&
+    Boolean(test.hasRecording || test.proctoring?.videoUploaded || test.videoUrl);
 
   const completedWithVideo = account.tests?.find(recordingReady);
   if (completedWithVideo) {
