@@ -85,6 +85,7 @@ import {
   type AdminAccessFlags,
 } from "@/lib/admin-accounts";
 import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
+import { EmployeePortalManager } from "@/components/admin/EmployeePortalManager";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
 function portalEmployeeName(account: { full_name?: string | null; employee_id?: string | null }): string {
@@ -1140,6 +1141,7 @@ export default function AdminDashboard() {
   const canViewEmployeePortal = adminPermissions.employeePortal;
   const canChangePassword = adminPermissions.changePassword;
   const [showAccessManager, setShowAccessManager] = useState(false);
+  const [showEmployeePortalManager, setShowEmployeePortalManager] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -1166,6 +1168,12 @@ export default function AdminDashboard() {
   const [editingSkillsValue, setEditingSkillsValue] = useState<string>("");
   const [editingEmployeeKey, setEditingEmployeeKey] = useState<string | null>(null);
   const [editingEmployeeValue, setEditingEmployeeValue] = useState<string>("");
+  const [editingPortalCell, setEditingPortalCell] = useState<{
+    employeeId: string;
+    field: "full_name" | "designation" | "department" | "product" | "email";
+  } | null>(null);
+  const [savingPortalEmployeeId, setSavingPortalEmployeeId] = useState<string | null>(null);
+  const [resettingPortalEmployeeId, setResettingPortalEmployeeId] = useState<string | null>(null);
   const [corpPoolListFilter, setCorpPoolListFilter] = useState<"all" | "shortlisted">("all");
   const employeesRef = useRef<any[]>([]);
   const shortlistIntentRef = useRef<Map<string, boolean>>(new Map());
@@ -3089,28 +3097,15 @@ export default function AdminDashboard() {
 
   const handleUpdateCorpPoolEmployee = async (
     employeeId: string,
-    field: "full_name" | "employee_id" | "department" | "skills" | "designation" | "score",
+    field: "full_name" | "employee_id" | "department" | "skills" | "designation",
     value: string
   ) => {
     const updates: Record<string, string | number> = {};
-    if (field === "score") {
-      const parsed = Number(String(value).replace(/%/g, "").trim());
-      if (!Number.isFinite(parsed)) {
-        setActionError("Score must be a number between 0 and 100.");
-        setTimeout(() => setActionError(null), 4000);
-        return;
-      }
-      updates.score = parsed;
-      if (selectedJdId && selectedJdId !== "all" && !selectedJdId.includes("@")) {
-        updates.score_override_jd_id = selectedJdId;
-      }
-    } else {
-      updates[field] = value.trim();
-      if (field !== "skills" && field !== "department" && !updates[field]) {
-        setActionError("This field cannot be empty.");
-        setTimeout(() => setActionError(null), 4000);
-        return;
-      }
+    updates[field] = value.trim();
+    if (field !== "skills" && field !== "department" && !updates[field]) {
+      setActionError("This field cannot be empty.");
+      setTimeout(() => setActionError(null), 4000);
+      return;
     }
     try {
       const res = await adminFetch("/api/admin/employees", {
@@ -3139,6 +3134,116 @@ export default function AdminDashboard() {
       setActionError(err.message || "Failed to update Corp Pool row");
       setTimeout(() => setActionError(null), 4000);
     }
+  };
+
+  const handleUpdatePortalEmployee = async (
+    employeeId: string,
+    field: "full_name" | "designation" | "department" | "product" | "email",
+    value: string
+  ) => {
+    const nextValue = value.trim();
+    if (field !== "department" && !nextValue) {
+      setActionError("This field cannot be empty.");
+      setTimeout(() => setActionError(null), 4000);
+      return;
+    }
+    setSavingPortalEmployeeId(employeeId);
+    try {
+      const response = await adminFetch(`/api/admin/employees/portal/${encodeURIComponent(employeeId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: { [field]: nextValue } }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || "Failed to update employee portal record.");
+      const savedValue =
+        field === "full_name" ? result.name || nextValue :
+        field === "designation" ? result.designation || nextValue :
+        field === "product" ? result.product || nextValue :
+        field === "email" ? result.email || nextValue : nextValue;
+      const rowKey =
+        field === "full_name" ? "full_name" :
+        field === "designation" ? "role" :
+        field === "department" ? "domain" : field;
+      setResourcePortalEmployees((previous) =>
+        previous.map((employee) =>
+          employee.employee_id === employeeId
+            ? { ...employee, [rowKey]: savedValue, ...(field === "email" ? { email_verified: false } : {}) }
+            : employee
+        )
+      );
+      setEditingPortalCell(null);
+      setActionSuccess("Employee Portal record updated.");
+      setTimeout(() => setActionSuccess(null), 2500);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to update employee portal record.");
+      setTimeout(() => setActionError(null), 4000);
+    } finally {
+      setSavingPortalEmployeeId(null);
+    }
+  };
+
+  const handleResetPortalEmployeePassword = async (employee: any) => {
+    const name = portalEmployeeName(employee);
+    if (!window.confirm(`Reset ${name}'s password to their Employee ID and email the employee at ${employee.email}?`)) return;
+    setResettingPortalEmployeeId(employee.employee_id);
+    try {
+      const response = await adminFetch(
+        `/api/admin/employees/portal/${encodeURIComponent(employee.employee_id)}/reset-password`,
+        { method: "POST" }
+      );
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || "Could not reset this employee's password.");
+      if (result.emailSent === false) {
+        setActionError(result.message || "Password reset, but the notification email could not be delivered.");
+        setTimeout(() => setActionError(null), 5000);
+      } else {
+        setActionSuccess(result.message || "Password reset and notification email sent.");
+        setTimeout(() => setActionSuccess(null), 3000);
+      }
+    } catch (err: any) {
+      setActionError(err.message || "Could not reset this employee's password.");
+      setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setResettingPortalEmployeeId(null);
+    }
+  };
+
+  const renderPortalEditableCell = (
+    employee: any,
+    field: "full_name" | "designation" | "department" | "product" | "email",
+    value: string
+  ) => {
+    const isEditing = editingPortalCell?.employeeId === employee.employee_id && editingPortalCell?.field === field;
+    if (!employee.portal_managed) return <span>{value || "—"}</span>;
+    if (isEditing) {
+      return (
+        <InlineCellEditor
+          value={value || ""}
+          onSave={(next) => void handleUpdatePortalEmployee(employee.employee_id, field, next)}
+          onCancel={() => setEditingPortalCell(null)}
+          className="w-full min-w-24 rounded border border-indigo-200 bg-white p-1 text-[10px] font-bold text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+          type={field === "email" ? "email" : "text"}
+        />
+      );
+    }
+    return (
+      <div className="group flex min-w-0 items-center gap-1">
+        <span className="min-w-0 truncate" title={value}>{value || "—"}</span>
+        <button
+          type="button"
+          disabled={savingPortalEmployeeId === employee.employee_id}
+          onClick={() => setEditingPortalCell({ employeeId: employee.employee_id, field })}
+          className="shrink-0 rounded p-1 text-slate-400 opacity-0 transition-opacity hover:bg-indigo-50 hover:text-indigo-600 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-indigo-950/30"
+          title={`Edit ${field === "full_name" ? "name" : field === "designation" ? "role" : field === "department" ? "domain" : field}`}
+          aria-label={`Edit ${field} for ${portalEmployeeName(employee)}`}
+        >
+          {savingPortalEmployeeId === employee.employee_id
+            ? <Loader2 className="h-3 w-3 animate-spin" />
+            : <Edit2 className="h-3 w-3" />}
+        </button>
+      </div>
+    );
   };
 
   const handleExportEmployees = async () => {
@@ -5402,6 +5507,9 @@ export default function AdminDashboard() {
       {showAccessManager && canManagePortalConfig && (
         <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
       )}
+      {showEmployeePortalManager && canManagePortalConfig && (
+        <EmployeePortalManager onClose={() => setShowEmployeePortalManager(false)} fetcher={adminFetch} />
+      )}
 
       <main className="max-w-full mx-auto px-6 py-8 space-y-8">
         
@@ -6439,38 +6547,16 @@ export default function AdminDashboard() {
                                       )}
                                     </td>
                                     <td className="p-3">
-                                      {editingEmployeeKey === `${emp.employee_id}:score` ? (
-                                        <InlineCellEditor
-                                          value={editingEmployeeValue}
-                                          className="w-16 p-1 text-[10px] font-bold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
-                                          onSave={(next) => handleUpdateCorpPoolEmployee(emp.employee_id, "score", next)}
-                                          onCancel={() => setEditingEmployeeKey(null)}
-                                        />
-                                      ) : (
-                                        <div className="flex items-center gap-1 group">
-                                          <span
-                                            className={`font-black text-sm ${
-                                              Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
-                                            }`}
-                                            title={emp.matchRationale || (emp.requiredCount
-                                                ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
-                                                : undefined)}
-                                          >
-                                            {emp.score}%
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              setEditingEmployeeKey(`${emp.employee_id}:score`);
-                                              setEditingEmployeeValue(String(emp.score ?? ""));
-                                            }}
-                                            className="p-0.5 rounded text-slate-400 hover:text-indigo-650 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                                            title="Edit score"
-                                          >
-                                            <Edit2 className="w-3 h-3" />
-                                          </button>
-                                        </div>
-                                      )}
+                                      <span
+                                        className={`font-black text-sm ${
+                                          Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
+                                        }`}
+                                        title={emp.matchRationale || (emp.requiredCount
+                                            ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
+                                            : undefined)}
+                                      >
+                                        {emp.score}%
+                                      </span>
                                       {emp.matchDecision && (
                                         <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
                                           {emp.matchDecision}
@@ -7006,16 +7092,33 @@ export default function AdminDashboard() {
                                         </button>
                                       </td>
                                       <td className="p-3">
-                                        <div className="font-semibold text-slate-800 dark:text-slate-200">{portalEmployeeName(account)}</div>
+                                        <div className="font-semibold text-slate-800 dark:text-slate-200">
+                                          {renderPortalEditableCell(account, "full_name", account.full_name || portalEmployeeName(account))}
+                                        </div>
                                         {account.ddh ? (
                                           <div className="text-[10px] text-slate-400 font-medium">DDH: {account.ddh}</div>
                                         ) : null}
                                       </td>
                                       <td className="p-3 font-bold text-slate-700 dark:text-slate-300">{portalEmployeeId(account)}</td>
-                                      <td className="p-3 font-medium text-slate-600 dark:text-slate-400">{account.role || "—"}</td>
-                                      <td className="p-3 font-medium text-slate-500">{account.domain || "—"}</td>
-                                      <td className="p-3 font-semibold text-slate-700 dark:text-slate-300 max-w-[160px] truncate" title={formatProductDisplayName(account.product)}>{formatProductDisplayName(account.product) || "—"}</td>
-                                      <td className="p-3 text-slate-500 max-w-[180px] truncate" title={account.email}>{account.email || "—"}</td>
+                                      <td className="p-3 font-medium text-slate-600 dark:text-slate-400">
+                                        {renderPortalEditableCell(account, "designation", account.role || "")}
+                                      </td>
+                                      <td className="p-3 font-medium text-slate-500">
+                                        {renderPortalEditableCell(account, "department", account.domain || "")}
+                                      </td>
+                                      <td className="p-3 font-semibold text-slate-700 dark:text-slate-300 max-w-[160px]">
+                                        {renderPortalEditableCell(account, "product", formatProductDisplayName(account.product) || "")}
+                                      </td>
+                                      <td className="p-3 text-slate-500 max-w-[220px]">
+                                        <div className="flex items-center gap-1">
+                                          {renderPortalEditableCell(account, "email", account.email || "")}
+                                          {account.email_verified && (
+                                            <Badge className="shrink-0 border-0 bg-emerald-100 px-1.5 py-0 text-[9px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" title="Email verified using OTP">
+                                              <CheckCircle2 className="mr-0.5 h-3 w-3" /> Verified
+                                            </Badge>
+                                          )}
+                                        </div>
+                                      </td>
                                       <td className="p-3">
                                         <Badge className="border-0 text-[10px] px-2 py-0.5 font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950/35 dark:text-indigo-300">
                                           {account.emp_status || "—"}
@@ -7083,7 +7186,7 @@ export default function AdminDashboard() {
                                         })()}
                                       </td>
                                       <td className="p-3">
-                                        <div className="flex flex-wrap items-center gap-1.5">
+                                        <div className="grid min-w-[360px] grid-cols-3 items-center gap-1.5">
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7103,7 +7206,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
                                           >
                                             <Play className="w-3.5 h-3.5 mr-1" />
                                             Play
@@ -7125,7 +7228,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
                                           >
                                             <Download className="w-3.5 h-3.5 mr-1" />
                                             Video
@@ -7141,7 +7244,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
                                           >
                                             {resettingTestId === account.test_id ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7166,7 +7269,7 @@ export default function AdminDashboard() {
                                                 : "No email address on file"
                                             }
                                             onClick={() => handleSendPortalEmployeeMail(account)}
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
                                           >
                                             {portalMailSendingId === account.employee_id ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7177,6 +7280,20 @@ export default function AdminDashboard() {
                                               </>
                                             )}
                                           </Button>
+                                          {account.portal_managed && (
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={!account.email || resettingPortalEmployeeId === account.employee_id}
+                                              title={account.email ? "Reset password to Employee ID and notify the employee" : "Add an email address before resetting the password"}
+                                              onClick={() => void handleResetPortalEmployeePassword(account)}
+                                              className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
+                                            >
+                                              {resettingPortalEmployeeId === account.employee_id
+                                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                : <><KeyRound className="w-3.5 h-3.5 mr-1" /> Reset Password</>}
+                                            </Button>
+                                          )}
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7197,7 +7314,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
                                           >
                                             {deletingVideoTestId === videoTest?.testId ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -8453,6 +8570,19 @@ export default function AdminDashboard() {
                 </div>
                 <Button
                   onClick={() => setShowAccessManager(true)}
+                  size="sm"
+                  className="h-7 px-3 text-[10px] font-black rounded-lg border shrink-0 bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
+                >
+                  MANAGE
+                </Button>
+              </div>
+              <div className="flex items-center justify-between gap-3 p-3 border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/30 rounded-xl">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="text-xs font-bold text-foreground">Employee Portal Users</div>
+                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Provision employees, products, and assigned question banks</div>
+                </div>
+                <Button
+                  onClick={() => setShowEmployeePortalManager(true)}
                   size="sm"
                   className="h-7 px-3 text-[10px] font-black rounded-lg border shrink-0 bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
                 >
