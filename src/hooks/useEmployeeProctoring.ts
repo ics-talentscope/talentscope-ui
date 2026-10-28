@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   EMPLOYEE_PROCTOR_MAX_VIOLATIONS,
   EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS,
+  EMPLOYEE_PROCTOR_FACE_MISSING_COOLDOWN_MS,
+  EMPLOYEE_PROCTOR_FACE_MISSING_SECONDS,
   EMPLOYEE_PROCTOR_START_GRACE_MS,
   type EmployeeProctoringState,
 } from "@/lib/employee-proctoring";
@@ -140,10 +142,12 @@ export function useEmployeeProctoring(options: {
 
       const nowMs = Date.now();
       const lastForType = lastTriggerRef.current[violationType] ?? 0;
-      // Face anomalies use a slightly longer per-type cooldown to reduce noise.
-      const cooldown =
-        /face|looking|multiple/i.test(violationType)
-          ? Math.max(EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS, 5000)
+      // Face Missing: long cooldown so brief detector flicker cannot burn all 3 strikes quickly.
+      // Other face/gaze anomalies: modest cooldown to reduce noise.
+      const cooldown = /face missing|face not/i.test(violationType)
+        ? EMPLOYEE_PROCTOR_FACE_MISSING_COOLDOWN_MS
+        : /face|looking|multiple/i.test(violationType)
+          ? Math.max(EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS, 8000)
           : EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS;
       if (nowMs - lastForType < cooldown) return;
       lastTriggerRef.current[violationType] = nowMs;
@@ -540,7 +544,7 @@ export function useEmployeeProctoring(options: {
         const now = Date.now();
         if (missing) {
           if (missingSince == null) missingSince = now;
-          else if (now - missingSince >= 3000) {
+          else if (now - missingSince >= EMPLOYEE_PROCTOR_FACE_MISSING_SECONDS * 1000) {
             triggerProctorWarning(
               "Face Missing",
               "Camera is on but no face is visible (covered lens, privacy slider, or left frame)"
@@ -606,7 +610,8 @@ export function useEmployeeProctoring(options: {
       const score = trackerInstance.getScore();
       let detectedState: typeof lastState = "one";
 
-      if (!positions || positions.length < 70 || score < 0.35) {
+      // Lower score floor than 0.35 — clmtrackr often dips under 0.35 while face is still visible on video.
+      if (!positions || positions.length < 70 || score < 0.22) {
         detectedState = "none";
       } else {
         const noseX = positions[62][0];
@@ -645,7 +650,7 @@ export function useEmployeeProctoring(options: {
         stateStartTime = now;
       } else {
         const duration = (now - stateStartTime) / 1000;
-        if (lastState === "none" && duration >= 3.0) {
+        if (lastState === "none" && duration >= EMPLOYEE_PROCTOR_FACE_MISSING_SECONDS) {
           triggerProctorWarning(
             "Face Missing",
             `No face detected for ${duration.toFixed(1)}s`

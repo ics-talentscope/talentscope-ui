@@ -85,7 +85,6 @@ import {
   type AdminAccessFlags,
 } from "@/lib/admin-accounts";
 import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
-import { EmployeePortalManager } from "@/components/admin/EmployeePortalManager";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
 function portalEmployeeName(account: { full_name?: string | null; employee_id?: string | null }): string {
@@ -284,6 +283,17 @@ function personSkillChips(emp: { skills?: string | null; matchingSkills?: string
   return (Array.isArray(emp.matchingSkills) ? emp.matchingSkills : []).filter(
     (skill) => typeof skill === "string" && skill.length >= 2 && skill.length <= 32 && /[A-Za-z]{2,}/.test(skill)
   );
+}
+
+function outboxStatusBadge(status?: string | null): { label: string; className: string } {
+  const raw = (status || "").toLowerCase();
+  if (raw === "sent") {
+    return { label: "Sent", className: "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-0" };
+  }
+  if (raw.includes("failed")) {
+    return { label: "Send failed", className: "bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-0" };
+  }
+  return { label: "Simulated", className: "bg-secondary text-primary border-0" };
 }
 
 function skillMatchBadge(item: Pick<SkillBreakdownItem, "status" | "scoring">): { label: string; className: string } {
@@ -1141,7 +1151,6 @@ export default function AdminDashboard() {
   const canViewEmployeePortal = adminPermissions.employeePortal;
   const canChangePassword = adminPermissions.changePassword;
   const [showAccessManager, setShowAccessManager] = useState(false);
-  const [showEmployeePortalManager, setShowEmployeePortalManager] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -1168,12 +1177,6 @@ export default function AdminDashboard() {
   const [editingSkillsValue, setEditingSkillsValue] = useState<string>("");
   const [editingEmployeeKey, setEditingEmployeeKey] = useState<string | null>(null);
   const [editingEmployeeValue, setEditingEmployeeValue] = useState<string>("");
-  const [editingPortalCell, setEditingPortalCell] = useState<{
-    employeeId: string;
-    field: "full_name" | "designation" | "department" | "product" | "email";
-  } | null>(null);
-  const [savingPortalEmployeeId, setSavingPortalEmployeeId] = useState<string | null>(null);
-  const [resettingPortalEmployeeId, setResettingPortalEmployeeId] = useState<string | null>(null);
   const [corpPoolListFilter, setCorpPoolListFilter] = useState<"all" | "shortlisted">("all");
   const employeesRef = useRef<any[]>([]);
   const shortlistIntentRef = useRef<Map<string, boolean>>(new Map());
@@ -1263,6 +1266,8 @@ export default function AdminDashboard() {
   } | null>(null);
   const [testResultsSearch, setTestResultsSearch] = useState("");
   const [testStatusFilter, setTestStatusFilter] = useState<PortalTestStatusFilter>("all");
+  const [portalProductFilter, setPortalProductFilter] = useState<string>("all");
+  const [portalDomainFilter, setPortalDomainFilter] = useState<string>("all");
   const [portalCompletedDateFilter, setPortalCompletedDateFilter] = useState<string>("all");
   const [portalCompletedDateMenu, setPortalCompletedDateMenu] = useState<PortalCompletedDateMenu>({
     type: "root",
@@ -2022,8 +2027,73 @@ export default function AdminDashboard() {
     }
   }, [portalCompletedDateFilter, portalCompletedDateModel]);
 
+  const portalProductOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    let hasBlank = false;
+    for (const account of resourcePortalEmployees) {
+      const raw = String(account.product || "").trim();
+      if (!raw) {
+        hasBlank = true;
+        continue;
+      }
+      const key = raw.toLowerCase();
+      if (!seen.has(key)) seen.set(key, raw);
+    }
+    const options = Array.from(seen.values()).sort((a, b) =>
+      formatProductDisplayName(a).localeCompare(formatProductDisplayName(b), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      })
+    );
+    return { options, hasBlank };
+  }, [resourcePortalEmployees]);
+
+  const portalDomainOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    let hasBlank = false;
+    for (const account of resourcePortalEmployees) {
+      const raw = String(account.domain || "").trim();
+      if (!raw) {
+        hasBlank = true;
+        continue;
+      }
+      const key = raw.toLowerCase();
+      if (!seen.has(key)) seen.set(key, raw);
+    }
+    const options = Array.from(seen.values()).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+    );
+    return { options, hasBlank };
+  }, [resourcePortalEmployees]);
+
+  useEffect(() => {
+    if (portalProductFilter === "all") return;
+    if (portalProductFilter === "__none__") {
+      if (!portalProductOptions.hasBlank) setPortalProductFilter("all");
+      return;
+    }
+    const stillPresent = portalProductOptions.options.some(
+      (product) => product.toLowerCase() === portalProductFilter
+    );
+    if (!stillPresent) setPortalProductFilter("all");
+  }, [portalProductFilter, portalProductOptions]);
+
+  useEffect(() => {
+    if (portalDomainFilter === "all") return;
+    if (portalDomainFilter === "__none__") {
+      if (!portalDomainOptions.hasBlank) setPortalDomainFilter("all");
+      return;
+    }
+    const stillPresent = portalDomainOptions.options.some(
+      (domain) => domain.toLowerCase() === portalDomainFilter
+    );
+    if (!stillPresent) setPortalDomainFilter("all");
+  }, [portalDomainFilter, portalDomainOptions]);
+
   const filteredPortalEmployees = useMemo(() => {
     const term = testResultsSearch.trim().toLowerCase();
+    const productKey = portalProductFilter.trim().toLowerCase();
+    const domainKey = portalDomainFilter.trim().toLowerCase();
     const filtered = resourcePortalEmployees.filter((account) => {
       if (!matchesPortalTestStatusFilter(account.test_status, testStatusFilter)) {
         return false;
@@ -2031,6 +2101,22 @@ export default function AdminDashboard() {
       if (portalCompletedDateFilter !== "all") {
         const day = portalCompletedDayKey(portalPrimaryCompletedAt(account));
         if (!matchesPortalCompletedDateFilter(day, portalCompletedDateFilter)) return false;
+      }
+      if (productKey && productKey !== "all") {
+        const accountProduct = String(account.product || "").trim();
+        if (productKey === "__none__") {
+          if (accountProduct) return false;
+        } else if (accountProduct.toLowerCase() !== productKey) {
+          return false;
+        }
+      }
+      if (domainKey && domainKey !== "all") {
+        const accountDomain = String(account.domain || "").trim();
+        if (domainKey === "__none__") {
+          if (accountDomain) return false;
+        } else if (accountDomain.toLowerCase() !== domainKey) {
+          return false;
+        }
       }
       if (!term) return true;
       return (
@@ -2053,7 +2139,14 @@ export default function AdminDashboard() {
       if (nameCmp !== 0) return nameCmp;
       return String(a.employee_id || "").localeCompare(String(b.employee_id || ""), undefined, { numeric: true });
     });
-  }, [resourcePortalEmployees, testResultsSearch, testStatusFilter, portalCompletedDateFilter]);
+  }, [
+    resourcePortalEmployees,
+    testResultsSearch,
+    testStatusFilter,
+    portalCompletedDateFilter,
+    portalProductFilter,
+    portalDomainFilter,
+  ]);
 
   const portalDateOnlyMatchCount = useMemo(() => {
     if (portalCompletedDateFilter === "all") return 0;
@@ -2068,11 +2161,15 @@ export default function AdminDashboard() {
   const hasActivePortalFilters =
     Boolean(testResultsSearch.trim()) ||
     testStatusFilter !== "all" ||
-    portalCompletedDateFilter !== "all";
+    portalCompletedDateFilter !== "all" ||
+    portalProductFilter !== "all" ||
+    portalDomainFilter !== "all";
 
   const clearPortalFilters = () => {
     setTestResultsSearch("");
     setTestStatusFilter("all");
+    setPortalProductFilter("all");
+    setPortalDomainFilter("all");
     setPortalCompletedDateFilter("all");
     setPortalCompletedDateMenu({ type: "root" });
   };
@@ -2230,9 +2327,23 @@ export default function AdminDashboard() {
       if (!response.ok) {
         throw new Error(data.error || "Failed to send assessment invitation.");
       }
-      setActionSuccess(
-        `Assessment invitation sent to ${portalEmployeeName(account)} (${account.email}).`
-      );
+      const row = Array.isArray(data.dispatched) ? data.dispatched[0] : null;
+      const sendStatus = String(row?.status || "").toLowerCase();
+      if (sendStatus === "sent") {
+        setActionSuccess(
+          `Assessment invitation sent to ${portalEmployeeName(account)} (${account.email}).`
+        );
+      } else if (sendStatus.includes("failed")) {
+        setActionError(
+          row?.error
+            ? `Invite logged but SMTP send failed: ${row.error}`
+            : "Invite logged but SMTP send failed. Check SMTP settings on the API host."
+        );
+      } else {
+        setActionSuccess(
+          `Assessment invitation recorded for ${account.email} (simulated — SMTP not configured).`
+        );
+      }
       await loadEmails();
     } catch (err: any) {
       setActionError(err.message || "Failed to send assessment invitation.");
@@ -2264,9 +2375,24 @@ export default function AdminDashboard() {
       if (!response.ok) {
         throw new Error(data.error || "Failed to send assessment invitations.");
       }
-      setActionSuccess(
-        `Assessment invitation sent to ${data.count} selected employee(s).`
-      );
+      const rows = Array.isArray(data.dispatched) ? data.dispatched : [];
+      const sent = rows.filter((r: { status?: string }) => String(r.status || "").toLowerCase() === "sent").length;
+      const failed = rows.filter((r: { status?: string }) => String(r.status || "").toLowerCase().includes("failed")).length;
+      if (failed && !sent) {
+        setActionError(
+          `SMTP send failed for ${failed} invite(s). Check SMTP settings on the API host.`
+        );
+      } else if (failed) {
+        setActionSuccess(
+          `Sent ${sent} invite(s); ${failed} failed SMTP delivery (logged in outbox).`
+        );
+      } else if (sent) {
+        setActionSuccess(`Assessment invitation sent to ${sent} selected employee(s).`);
+      } else {
+        setActionSuccess(
+          `Recorded ${data.count || rows.length} invite(s) as simulated — SMTP is not configured on the API.`
+        );
+      }
       await loadEmails();
     } catch (err: any) {
       setActionError(err.message || "Failed to send assessment invitations.");
@@ -3097,15 +3223,28 @@ export default function AdminDashboard() {
 
   const handleUpdateCorpPoolEmployee = async (
     employeeId: string,
-    field: "full_name" | "employee_id" | "department" | "skills" | "designation",
+    field: "full_name" | "employee_id" | "department" | "skills" | "designation" | "score",
     value: string
   ) => {
     const updates: Record<string, string | number> = {};
-    updates[field] = value.trim();
-    if (field !== "skills" && field !== "department" && !updates[field]) {
-      setActionError("This field cannot be empty.");
-      setTimeout(() => setActionError(null), 4000);
-      return;
+    if (field === "score") {
+      const parsed = Number(String(value).replace(/%/g, "").trim());
+      if (!Number.isFinite(parsed)) {
+        setActionError("Score must be a number between 0 and 100.");
+        setTimeout(() => setActionError(null), 4000);
+        return;
+      }
+      updates.score = parsed;
+      if (selectedJdId && selectedJdId !== "all" && !selectedJdId.includes("@")) {
+        updates.score_override_jd_id = selectedJdId;
+      }
+    } else {
+      updates[field] = value.trim();
+      if (field !== "skills" && field !== "department" && !updates[field]) {
+        setActionError("This field cannot be empty.");
+        setTimeout(() => setActionError(null), 4000);
+        return;
+      }
     }
     try {
       const res = await adminFetch("/api/admin/employees", {
@@ -3134,116 +3273,6 @@ export default function AdminDashboard() {
       setActionError(err.message || "Failed to update Corp Pool row");
       setTimeout(() => setActionError(null), 4000);
     }
-  };
-
-  const handleUpdatePortalEmployee = async (
-    employeeId: string,
-    field: "full_name" | "designation" | "department" | "product" | "email",
-    value: string
-  ) => {
-    const nextValue = value.trim();
-    if (field !== "department" && !nextValue) {
-      setActionError("This field cannot be empty.");
-      setTimeout(() => setActionError(null), 4000);
-      return;
-    }
-    setSavingPortalEmployeeId(employeeId);
-    try {
-      const response = await adminFetch(`/api/admin/employees/portal/${encodeURIComponent(employeeId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates: { [field]: nextValue } }),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.success) throw new Error(result.error || "Failed to update employee portal record.");
-      const savedValue =
-        field === "full_name" ? result.name || nextValue :
-        field === "designation" ? result.designation || nextValue :
-        field === "product" ? result.product || nextValue :
-        field === "email" ? result.email || nextValue : nextValue;
-      const rowKey =
-        field === "full_name" ? "full_name" :
-        field === "designation" ? "role" :
-        field === "department" ? "domain" : field;
-      setResourcePortalEmployees((previous) =>
-        previous.map((employee) =>
-          employee.employee_id === employeeId
-            ? { ...employee, [rowKey]: savedValue, ...(field === "email" ? { email_verified: false } : {}) }
-            : employee
-        )
-      );
-      setEditingPortalCell(null);
-      setActionSuccess("Employee Portal record updated.");
-      setTimeout(() => setActionSuccess(null), 2500);
-    } catch (err: any) {
-      setActionError(err.message || "Failed to update employee portal record.");
-      setTimeout(() => setActionError(null), 4000);
-    } finally {
-      setSavingPortalEmployeeId(null);
-    }
-  };
-
-  const handleResetPortalEmployeePassword = async (employee: any) => {
-    const name = portalEmployeeName(employee);
-    if (!window.confirm(`Reset ${name}'s password to their Employee ID and email the employee at ${employee.email}?`)) return;
-    setResettingPortalEmployeeId(employee.employee_id);
-    try {
-      const response = await adminFetch(
-        `/api/admin/employees/portal/${encodeURIComponent(employee.employee_id)}/reset-password`,
-        { method: "POST" }
-      );
-      const result = await response.json();
-      if (!response.ok || !result.success) throw new Error(result.error || "Could not reset this employee's password.");
-      if (result.emailSent === false) {
-        setActionError(result.message || "Password reset, but the notification email could not be delivered.");
-        setTimeout(() => setActionError(null), 5000);
-      } else {
-        setActionSuccess(result.message || "Password reset and notification email sent.");
-        setTimeout(() => setActionSuccess(null), 3000);
-      }
-    } catch (err: any) {
-      setActionError(err.message || "Could not reset this employee's password.");
-      setTimeout(() => setActionError(null), 5000);
-    } finally {
-      setResettingPortalEmployeeId(null);
-    }
-  };
-
-  const renderPortalEditableCell = (
-    employee: any,
-    field: "full_name" | "designation" | "department" | "product" | "email",
-    value: string
-  ) => {
-    const isEditing = editingPortalCell?.employeeId === employee.employee_id && editingPortalCell?.field === field;
-    if (!employee.portal_managed) return <span>{value || "—"}</span>;
-    if (isEditing) {
-      return (
-        <InlineCellEditor
-          value={value || ""}
-          onSave={(next) => void handleUpdatePortalEmployee(employee.employee_id, field, next)}
-          onCancel={() => setEditingPortalCell(null)}
-          className="w-full min-w-24 rounded border border-indigo-200 bg-white p-1 text-[10px] font-bold text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
-          type={field === "email" ? "email" : "text"}
-        />
-      );
-    }
-    return (
-      <div className="group flex min-w-0 items-center gap-1">
-        <span className="min-w-0 truncate" title={value}>{value || "—"}</span>
-        <button
-          type="button"
-          disabled={savingPortalEmployeeId === employee.employee_id}
-          onClick={() => setEditingPortalCell({ employeeId: employee.employee_id, field })}
-          className="shrink-0 rounded p-1 text-slate-400 opacity-0 transition-opacity hover:bg-indigo-50 hover:text-indigo-600 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-indigo-950/30"
-          title={`Edit ${field === "full_name" ? "name" : field === "designation" ? "role" : field === "department" ? "domain" : field}`}
-          aria-label={`Edit ${field} for ${portalEmployeeName(employee)}`}
-        >
-          {savingPortalEmployeeId === employee.employee_id
-            ? <Loader2 className="h-3 w-3 animate-spin" />
-            : <Edit2 className="h-3 w-3" />}
-        </button>
-      </div>
-    );
   };
 
   const handleExportEmployees = async () => {
@@ -4309,8 +4338,24 @@ export default function AdminDashboard() {
       if (!response.ok) throw new Error(data.error || "Failed to dispatch invite email");
 
       await loadEmails();
-      setActionSuccess(`Invitation email simulated & dispatched to ${email}! Secure assessment access is unlocked.`);
-      setTimeout(() => setActionSuccess(null), 5000);
+      const sendStatus = String(data.status || "").toLowerCase();
+      if (sendStatus === "sent") {
+        setActionSuccess(`Invitation email sent to ${email}. Secure assessment access is unlocked.`);
+      } else if (sendStatus.includes("failed")) {
+        setActionError(
+          data.error
+            ? `Invite logged but SMTP send failed for ${email}: ${data.error}`
+            : `Invite logged but SMTP send failed for ${email}. Check SMTP settings on the API host.`
+        );
+      } else {
+        setActionSuccess(
+          `Invitation recorded for ${email} (simulated — SMTP is not configured on the API).`
+        );
+      }
+      setTimeout(() => {
+        setActionSuccess(null);
+        setActionError(null);
+      }, 6000);
     } catch (error: any) {
       setActionError(error.message || "Failed to dispatch invite email.");
       setTimeout(() => setActionError(null), 5000);
@@ -4582,7 +4627,7 @@ export default function AdminDashboard() {
         } else {
           setEmails((prev) => prev.filter((item) => item.id !== emailId));
         }
-        setActionSuccess("Simulated invitation email log deleted successfully.");
+        setActionSuccess("Invitation email log deleted successfully.");
         setTimeout(() => setActionSuccess(null), 3000);
       } catch (error: any) {
         setActionError(error.message || "Failed to delete email log.");
@@ -5506,9 +5551,6 @@ export default function AdminDashboard() {
       {showMonitor && adminPermissions.systemMonitor && <SystemMonitor open={showMonitor} onClose={closeMonitor} fetcher={adminFetch} />}
       {showAccessManager && canManagePortalConfig && (
         <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
-      )}
-      {showEmployeePortalManager && canManagePortalConfig && (
-        <EmployeePortalManager onClose={() => setShowEmployeePortalManager(false)} fetcher={adminFetch} />
       )}
 
       <main className="max-w-full mx-auto px-6 py-8 space-y-8">
@@ -6547,16 +6589,38 @@ export default function AdminDashboard() {
                                       )}
                                     </td>
                                     <td className="p-3">
-                                      <span
-                                        className={`font-black text-sm ${
-                                          Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
-                                        }`}
-                                        title={emp.matchRationale || (emp.requiredCount
-                                            ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
-                                            : undefined)}
-                                      >
-                                        {emp.score}%
-                                      </span>
+                                      {editingEmployeeKey === `${emp.employee_id}:score` ? (
+                                        <InlineCellEditor
+                                          value={editingEmployeeValue}
+                                          className="w-16 p-1 text-[10px] font-bold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
+                                          onSave={(next) => handleUpdateCorpPoolEmployee(emp.employee_id, "score", next)}
+                                          onCancel={() => setEditingEmployeeKey(null)}
+                                        />
+                                      ) : (
+                                        <div className="flex items-center gap-1 group">
+                                          <span
+                                            className={`font-black text-sm ${
+                                              Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
+                                            }`}
+                                            title={emp.matchRationale || (emp.requiredCount
+                                                ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
+                                                : undefined)}
+                                          >
+                                            {emp.score}%
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setEditingEmployeeKey(`${emp.employee_id}:score`);
+                                              setEditingEmployeeValue(String(emp.score ?? ""));
+                                            }}
+                                            className="p-0.5 rounded text-slate-400 hover:text-indigo-650 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                                            title="Edit score"
+                                          >
+                                            <Edit2 className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      )}
                                       {emp.matchDecision && (
                                         <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
                                           {emp.matchDecision}
@@ -6673,6 +6737,42 @@ export default function AdminDashboard() {
                               <X className="w-3.5 h-3.5" />
                             </button>
                           ) : null}
+                        </div>
+                        <div className="w-full sm:w-44 shrink-0">
+                          <select
+                            value={portalProductFilter}
+                            onChange={(e) => setPortalProductFilter(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            aria-label="Product filter"
+                          >
+                            <option value="all">Product: All</option>
+                            {portalProductOptions.options.map((product) => (
+                              <option key={product.toLowerCase()} value={product.toLowerCase()}>
+                                {formatProductDisplayName(product)}
+                              </option>
+                            ))}
+                            {portalProductOptions.hasBlank ? (
+                              <option value="__none__">No product</option>
+                            ) : null}
+                          </select>
+                        </div>
+                        <div className="w-full sm:w-40 shrink-0">
+                          <select
+                            value={portalDomainFilter}
+                            onChange={(e) => setPortalDomainFilter(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            aria-label="Domain filter"
+                          >
+                            <option value="all">Domain: All</option>
+                            {portalDomainOptions.options.map((domain) => (
+                              <option key={domain.toLowerCase()} value={domain.toLowerCase()}>
+                                {domain}
+                              </option>
+                            ))}
+                            {portalDomainOptions.hasBlank ? (
+                              <option value="__none__">No domain</option>
+                            ) : null}
+                          </select>
                         </div>
                         <div className="w-full sm:w-56 shrink-0 relative" ref={portalCompletedDateRef}>
                           <button
@@ -6912,6 +7012,38 @@ export default function AdminDashboard() {
                             <X className="w-3 h-3" />
                           </button>
                         ) : null}
+                        {portalProductFilter !== "all" ? (
+                          <button
+                            type="button"
+                            onClick={() => setPortalProductFilter("all")}
+                            className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
+                          >
+                            Product:{" "}
+                            {portalProductFilter === "__none__"
+                              ? "No product"
+                              : formatProductDisplayName(
+                                  portalProductOptions.options.find(
+                                    (p) => p.toLowerCase() === portalProductFilter
+                                  ) || portalProductFilter
+                                )}
+                            <X className="w-3 h-3" />
+                          </button>
+                        ) : null}
+                        {portalDomainFilter !== "all" ? (
+                          <button
+                            type="button"
+                            onClick={() => setPortalDomainFilter("all")}
+                            className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
+                          >
+                            Domain:{" "}
+                            {portalDomainFilter === "__none__"
+                              ? "No domain"
+                              : portalDomainOptions.options.find(
+                                  (d) => d.toLowerCase() === portalDomainFilter
+                                ) || portalDomainFilter}
+                            <X className="w-3 h-3" />
+                          </button>
+                        ) : null}
                         {portalCompletedDateFilter !== "all" ? (
                           <button
                             type="button"
@@ -7092,33 +7224,16 @@ export default function AdminDashboard() {
                                         </button>
                                       </td>
                                       <td className="p-3">
-                                        <div className="font-semibold text-slate-800 dark:text-slate-200">
-                                          {renderPortalEditableCell(account, "full_name", account.full_name || portalEmployeeName(account))}
-                                        </div>
+                                        <div className="font-semibold text-slate-800 dark:text-slate-200">{portalEmployeeName(account)}</div>
                                         {account.ddh ? (
                                           <div className="text-[10px] text-slate-400 font-medium">DDH: {account.ddh}</div>
                                         ) : null}
                                       </td>
                                       <td className="p-3 font-bold text-slate-700 dark:text-slate-300">{portalEmployeeId(account)}</td>
-                                      <td className="p-3 font-medium text-slate-600 dark:text-slate-400">
-                                        {renderPortalEditableCell(account, "designation", account.role || "")}
-                                      </td>
-                                      <td className="p-3 font-medium text-slate-500">
-                                        {renderPortalEditableCell(account, "department", account.domain || "")}
-                                      </td>
-                                      <td className="p-3 font-semibold text-slate-700 dark:text-slate-300 max-w-[160px]">
-                                        {renderPortalEditableCell(account, "product", formatProductDisplayName(account.product) || "")}
-                                      </td>
-                                      <td className="p-3 text-slate-500 max-w-[220px]">
-                                        <div className="flex items-center gap-1">
-                                          {renderPortalEditableCell(account, "email", account.email || "")}
-                                          {account.email_verified && (
-                                            <Badge className="shrink-0 border-0 bg-emerald-100 px-1.5 py-0 text-[9px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" title="Email verified using OTP">
-                                              <CheckCircle2 className="mr-0.5 h-3 w-3" /> Verified
-                                            </Badge>
-                                          )}
-                                        </div>
-                                      </td>
+                                      <td className="p-3 font-medium text-slate-600 dark:text-slate-400">{account.role || "—"}</td>
+                                      <td className="p-3 font-medium text-slate-500">{account.domain || "—"}</td>
+                                      <td className="p-3 font-semibold text-slate-700 dark:text-slate-300 max-w-[160px] truncate" title={formatProductDisplayName(account.product)}>{formatProductDisplayName(account.product) || "—"}</td>
+                                      <td className="p-3 text-slate-500 max-w-[180px] truncate" title={account.email}>{account.email || "—"}</td>
                                       <td className="p-3">
                                         <Badge className="border-0 text-[10px] px-2 py-0.5 font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950/35 dark:text-indigo-300">
                                           {account.emp_status || "—"}
@@ -7186,7 +7301,7 @@ export default function AdminDashboard() {
                                         })()}
                                       </td>
                                       <td className="p-3">
-                                        <div className="grid min-w-[360px] grid-cols-3 items-center gap-1.5">
+                                        <div className="flex flex-wrap items-center gap-1.5">
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7206,7 +7321,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
+                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
                                           >
                                             <Play className="w-3.5 h-3.5 mr-1" />
                                             Play
@@ -7228,7 +7343,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
+                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
                                           >
                                             <Download className="w-3.5 h-3.5 mr-1" />
                                             Video
@@ -7244,7 +7359,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
+                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
                                           >
                                             {resettingTestId === account.test_id ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7269,7 +7384,7 @@ export default function AdminDashboard() {
                                                 : "No email address on file"
                                             }
                                             onClick={() => handleSendPortalEmployeeMail(account)}
-                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
+                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
                                           >
                                             {portalMailSendingId === account.employee_id ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7280,20 +7395,6 @@ export default function AdminDashboard() {
                                               </>
                                             )}
                                           </Button>
-                                          {account.portal_managed && (
-                                            <Button
-                                              size="sm"
-                                              variant="outline"
-                                              disabled={!account.email || resettingPortalEmployeeId === account.employee_id}
-                                              title={account.email ? "Reset password to Employee ID and notify the employee" : "Add an email address before resetting the password"}
-                                              onClick={() => void handleResetPortalEmployeePassword(account)}
-                                              className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border"
-                                            >
-                                              {resettingPortalEmployeeId === account.employee_id
-                                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                : <><KeyRound className="w-3.5 h-3.5 mr-1" /> Reset Password</>}
-                                            </Button>
-                                          )}
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7314,7 +7415,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="w-full min-w-0 justify-center whitespace-nowrap rounded-lg h-8 px-1 text-[9px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
                                           >
                                             {deletingVideoTestId === videoTest?.testId ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7338,29 +7439,25 @@ export default function AdminDashboard() {
                                               </p>
                                             )}
                                             <div>
-                                              <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-                                                Assigned Questions ({account.assigned_question_count})
-                                              </h4>
                                               {(() => {
                                                 const lazyAssigned = assignedQuestionsByEmployee[account.employee_id];
                                                 const assignedQuestionsList =
                                                   account.assigned_questions?.length
                                                     ? account.assigned_questions
                                                     : lazyAssigned?.questions ?? [];
+                                                const assignedCount =
+                                                  assignedQuestionsList.length ||
+                                                  Number(account.assigned_question_count || 0);
 
-                                                if (
-                                                  !assignedQuestionsList.length &&
-                                                  lazyAssigned?.loading
-                                                ) {
-                                                  return (
+                                                let body: React.ReactNode;
+                                                if (!assignedQuestionsList.length && lazyAssigned?.loading) {
+                                                  body = (
                                                     <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
                                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                                       Loading assigned questions...
                                                     </div>
                                                   );
-                                                }
-
-                                                if (account.test_status === "completed") {
+                                                } else if (account.test_status === "completed") {
                                                   const completedTestId =
                                                     account.tests?.find((test: any) => test.status === "completed")?.id ??
                                                     account.test_id;
@@ -7368,15 +7465,14 @@ export default function AdminDashboard() {
                                                     ? testAttemptDetails[completedTestId]
                                                     : undefined;
                                                   if (attemptData?.loading) {
-                                                    return (
+                                                    body = (
                                                       <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
                                                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                                         Loading submitted answers...
                                                       </div>
                                                     );
-                                                  }
-                                                  if (attemptData?.questions?.length) {
-                                                    return (
+                                                  } else if (attemptData?.questions?.length) {
+                                                    body = (
                                                       <ol className="list-decimal pl-5 space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
                                                         {attemptData.questions.map((q) => (
                                                           <li key={q.question_index} className="space-y-1">
@@ -7391,10 +7487,16 @@ export default function AdminDashboard() {
                                                                   }`}
                                                                 >
                                                                   Selected: {q.selected_option_text}
-                                                                  {q.is_correct === false ? " (Incorrect)" : q.is_correct ? " (Correct)" : ""}
+                                                                  {q.is_correct === false
+                                                                    ? " (Incorrect)"
+                                                                    : q.is_correct
+                                                                      ? " (Correct)"
+                                                                      : ""}
                                                                 </div>
                                                               ) : (
-                                                                <div className="text-slate-400 font-medium italic">Not answered</div>
+                                                                <div className="text-slate-400 font-medium italic">
+                                                                  Not answered
+                                                                </div>
                                                               )}
                                                               {q.submitted_at && (
                                                                 <div className="text-[10px] text-slate-400 font-medium">
@@ -7406,38 +7508,56 @@ export default function AdminDashboard() {
                                                         ))}
                                                       </ol>
                                                     );
-                                                  }
-                                                  if (attemptData?.error) {
-                                                    return (
+                                                  } else if (attemptData?.error) {
+                                                    body = (
                                                       <p className="text-[11px] text-rose-500 font-medium">
                                                         Could not load answers: {attemptData.error}
                                                       </p>
                                                     );
+                                                  } else if (assignedQuestionsList.length > 0) {
+                                                    body = (
+                                                      <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                                                        {assignedQuestionsList.map((q: string, idx: number) => (
+                                                          <li key={idx}>{q}</li>
+                                                        ))}
+                                                      </ol>
+                                                    );
+                                                  } else {
+                                                    body = (
+                                                      <p className="text-[11px] text-slate-400 font-medium italic">
+                                                        No assigned question text found for this employee.
+                                                      </p>
+                                                    );
                                                   }
-                                                }
-
-                                                if (assignedQuestionsList.length > 0) {
-                                                  return (
+                                                } else if (assignedQuestionsList.length > 0) {
+                                                  body = (
                                                     <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
                                                       {assignedQuestionsList.map((q: string, idx: number) => (
                                                         <li key={idx}>{q}</li>
                                                       ))}
                                                     </ol>
                                                   );
-                                                }
-
-                                                if (lazyAssigned?.error) {
-                                                  return (
+                                                } else if (lazyAssigned?.error) {
+                                                  body = (
                                                     <p className="text-[11px] text-rose-500 font-medium">
                                                       Could not load assigned questions: {lazyAssigned.error}
+                                                    </p>
+                                                  );
+                                                } else {
+                                                  body = (
+                                                    <p className="text-[11px] text-slate-400 font-medium italic">
+                                                      No assigned question text found for this employee.
                                                     </p>
                                                   );
                                                 }
 
                                                 return (
-                                                  <p className="text-[11px] text-slate-400 font-medium italic">
-                                                    No assigned question text found in the portal mapping snapshot for this employee.
-                                                  </p>
+                                                  <>
+                                                    <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-slate-500 mb-2">
+                                                      Assigned Questions ({assignedCount})
+                                                    </h4>
+                                                    {body}
+                                                  </>
                                                 );
                                               })()}
                                             </div>
@@ -7614,7 +7734,15 @@ export default function AdminDashboard() {
                                               ? `No employees completed on ${formatPortalCompletedFilterButtonLabel(portalCompletedDateFilter).replace(/^Completed On: /, "")}.`
                                               : testStatusFilter !== "all"
                                                 ? `No employees match test status “${getPortalTestStatusLabel(testStatusFilter)}”.`
-                                                : "No employees match the current filters."}
+                                                : portalDomainFilter !== "all"
+                                                  ? `No employees match domain “${
+                                                      portalDomainFilter === "__none__"
+                                                        ? "No domain"
+                                                        : portalDomainOptions.options.find(
+                                                            (d) => d.toLowerCase() === portalDomainFilter
+                                                          ) || portalDomainFilter
+                                                    }”.`
+                                                  : "No employees match the current filters."}
                                       </p>
                                       {testResultsSearch.trim() && portalDateOnlyMatchCount > 0 ? (
                                         <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
@@ -7653,7 +7781,7 @@ export default function AdminDashboard() {
                       </div>
                       <h3 className="font-bold text-slate-800 text-sm">No Emails Sent</h3>
                       <p className="text-xs text-slate-500 max-w-sm leading-relaxed">
-                        No invitation emails have been simulated or dispatched to candidates yet. Mark a candidate suitable and click "Send Invite Mail" to simulate an invitation.
+                        No invitation emails have been dispatched yet. Mark a candidate suitable and click "Send Invite Mail" to send an invitation.
                       </p>
                     </div>
                   ) : (
@@ -7688,7 +7816,7 @@ export default function AdminDashboard() {
                           <span className="text-xs font-bold text-muted-foreground">
                             {selectedEmailIds.length > 0
                               ? `${selectedEmailIds.length} selected`
-                              : `Showing ${emailsToRender.length} Simulated Invitation Email${emailsToRender.length !== 1 ? "s" : ""}`
+                              : `Showing ${emailsToRender.length} invitation email${emailsToRender.length !== 1 ? "s" : ""}`
                             }
                           </span>
                         </div>
@@ -7741,9 +7869,14 @@ export default function AdminDashboard() {
                                 <div className="space-y-1">
                                   <h4 className="font-black text-foreground text-sm flex items-center gap-1.5">
                                     {email.fullName}
-                                    <Badge className="bg-secondary text-primary border-0 font-bold text-[9px] px-2 py-0.5">
-                                      Simulated Dispatch
-                                    </Badge>
+                                    {(() => {
+                                      const badge = outboxStatusBadge(email.status);
+                                      return (
+                                        <Badge className={`${badge.className} font-bold text-[9px] px-2 py-0.5`}>
+                                          {badge.label}
+                                        </Badge>
+                                      );
+                                    })()}
                                   </h4>
                                   <div className="text-xs text-muted-foreground font-semibold">
                                     To: <span className="text-primary font-bold">{email.to}</span>
@@ -8576,19 +8709,6 @@ export default function AdminDashboard() {
                   MANAGE
                 </Button>
               </div>
-              <div className="flex items-center justify-between gap-3 p-3 border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/30 rounded-xl">
-                <div className="space-y-0.5 min-w-0">
-                  <div className="text-xs font-bold text-foreground">Employee Portal Users</div>
-                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Provision employees, products, and assigned question banks</div>
-                </div>
-                <Button
-                  onClick={() => setShowEmployeePortalManager(true)}
-                  size="sm"
-                  className="h-7 px-3 text-[10px] font-black rounded-lg border shrink-0 bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
-                >
-                  MANAGE
-                </Button>
-              </div>
             </div>
           </Card>
           )}
@@ -8980,7 +9100,7 @@ export default function AdminDashboard() {
                 {deleteTargetId === "bulk"
                   ? `This action is permanent and will delete the ${selectedResumeIds.length} selected candidate resume analyses, test answers, and active sessions.`
                   : deleteTargetId === "bulk-emails"
-                  ? `This action is permanent and will delete the ${selectedEmailIds.length} selected simulated invitation email outbox logs.`
+                  ? `This action is permanent and will delete the ${selectedEmailIds.length} selected invitation email outbox logs.`
                   : deleteTargetId === "bulk-employees-pool"
                   ? `This action is permanent and will delete the ${selectedEmployeeIds.length} selected corporate pool employee records and their stored resumes.`
                   : deleteTargetId === "bulk-jds"
@@ -8988,9 +9108,9 @@ export default function AdminDashboard() {
                   : deleteTargetId === "bulk-portal-videos"
                   ? `This will permanently delete proctoring videos for ${selectedPortalVideoTargets.length} selected employee(s). Test scores, answers, and status will NOT be changed.`
                   : deleteTargetId === "clear-outbox"
-                  ? "This action is permanent and will clear all simulated invitation email logs from the outbox."
+                  ? "This action is permanent and will clear all invitation email logs from the outbox."
                   : deleteTargetId.startsWith("outbox-log:")
-                  ? "This action is permanent and will delete this simulated invitation email log."
+                  ? "This action is permanent and will delete this invitation email log."
                   : deleteTargetId.startsWith("emp-")
                   ? "This action is permanent and will delete the employee record and stored resume from Corp Pool."
                   : "This action is permanent and will delete the candidate's resume analysis, test answers, and active session."}
