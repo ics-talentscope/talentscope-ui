@@ -177,6 +177,24 @@ export function recordProctorViolation(
     return existing;
   }
 
+  const classified = classifyProctorAnomaly(violationType);
+  const entry = {
+    type: violationType.slice(0, 120),
+    timestamp: now,
+    category: opts?.category || classified.category,
+    severity: opts?.severity || classified.severity,
+    detail: opts?.detail ? opts.detail.slice(0, 240) : undefined,
+  };
+
+  // Face Missing is advisory only — models false-negative while video still shows face.
+  if (isFaceMissing && !opts?.forceAutoSubmit) {
+    return {
+      ...existing,
+      lastViolationAt: now,
+      violations: [...existing.violations, entry],
+    };
+  }
+
   const nextCount = Math.min(
     EMPLOYEE_PROCTOR_MAX_VIOLATIONS,
     (existing.warningCount || 0) + 1
@@ -186,23 +204,12 @@ export function recordProctorViolation(
     existing.autoSubmitted ||
     nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS;
 
-  const classified = classifyProctorAnomaly(violationType);
-
   return {
     ...existing,
     warningCount: nextCount,
     autoSubmitted,
     lastViolationAt: now,
-    violations: [
-      ...existing.violations,
-      {
-        type: violationType.slice(0, 120),
-        timestamp: now,
-        category: opts?.category || classified.category,
-        severity: opts?.severity || classified.severity,
-        detail: opts?.detail ? opts.detail.slice(0, 240) : undefined,
-      },
-    ],
+    violations: [...existing.violations, entry],
   };
 }
 

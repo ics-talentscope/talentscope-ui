@@ -154,13 +154,25 @@ export function useEmployeeProctoring(options: {
 
       void (async () => {
         const serverState = await persistProctorViolation(violationType, detail);
-        const nextCount = serverState?.warningCount ?? Math.min(warningCount + 1, EMPLOYEE_PROCTOR_MAX_VIOLATIONS);
-        setWarningCount(nextCount);
+        const isFaceMissing = /face missing|face not/i.test(violationType);
+        // Face Missing must not burn strikes / auto-submit (detector false negatives).
+        const nextCount = isFaceMissing
+          ? (serverState?.warningCount ?? warningCount)
+          : (serverState?.warningCount ?? Math.min(warningCount + 1, EMPLOYEE_PROCTOR_MAX_VIOLATIONS));
+        if (!isFaceMissing) {
+          setWarningCount(nextCount);
+        }
 
-        const msgText = violationMessage(violationType, nextCount);
+        const msgText = isFaceMissing
+          ? "Camera tip: keep your face centered and well-lit. This does not auto-submit your test."
+          : violationMessage(violationType, nextCount);
         setShowProctorWarning(msgText);
 
-        if (nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS && !autoSubmitTriggeredRef.current) {
+        if (
+          !isFaceMissing &&
+          nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS &&
+          !autoSubmitTriggeredRef.current
+        ) {
           autoSubmitTriggeredRef.current = true;
           setTimeout(() => {
             setShowProctorWarning(null);
