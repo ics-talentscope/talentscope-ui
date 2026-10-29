@@ -582,6 +582,8 @@ function portalVideoTest(account: {
     proctoring?: { videoUploaded?: boolean } | null;
   }>;
 }): { testId: string; hasVideo: boolean } | null {
+  // Only enable Play/Download when the recording file is actually present.
+  // videoUrl / videoUploaded alone are stale flags for many older attempts.
   const recordingReady = (test: {
     status?: string;
     hasRecording?: boolean;
@@ -1389,7 +1391,7 @@ export default function AdminDashboard() {
     testId: string;
     employeeId: string;
     employeeName?: string;
-    mode: "stream" | "blob" | "cdn";
+    mode: "loading" | "stream" | "blob" | "cdn";
   } | null>(null);
 
   useEffect(() => {
@@ -2579,7 +2581,7 @@ export default function AdminDashboard() {
     }
   };
 
-  const handlePlayTestVideo = (
+  const handlePlayTestVideo = async (
     testId: string,
     employeeId: string,
     employeeName?: string
@@ -2595,18 +2597,44 @@ export default function AdminDashboard() {
       return;
     }
     const fileName = portalVideoFileName(employeeId, employeeName || employeeId);
+    const title = employeeName || employeeId || fileName;
+    // MediaRecorder WebMs often lack Cues; Chromium Range streaming fails on those.
+    // Load with Authorization into a blob URL so the full file demuxes cleanly.
     setVideoPreview({
-      url: buildVideoStreamUrl(testId, fileName, token),
-      title: employeeName || employeeId || fileName,
+      url: "",
+      title,
       testId,
       employeeId,
       employeeName,
-      mode: "stream",
+      mode: "loading",
     });
+    try {
+      const { blob } = await fetchTestVideoBlob(testId, employeeId, employeeName);
+      setVideoPreview({
+        url: URL.createObjectURL(blob),
+        title,
+        testId,
+        employeeId,
+        employeeName,
+        mode: "blob",
+      });
+    } catch (err: any) {
+      setVideoPreview({
+        url: buildVideoStreamUrl(testId, fileName, token),
+        title,
+        testId,
+        employeeId,
+        employeeName,
+        mode: "stream",
+      });
+      if (err?.message) {
+        console.warn("Blob play failed, trying stream URL:", err.message);
+      }
+    }
   };
 
   const handleVideoPlaybackError = async () => {
-    if (!videoPreview) return;
+    if (!videoPreview || videoPreview.mode === "loading") return;
     const { testId, employeeId, employeeName, mode, title } = videoPreview;
 
     if (mode === "stream") {
@@ -2625,27 +2653,7 @@ export default function AdminDashboard() {
         });
         return;
       } catch {
-        // fall through to CDN
-      }
-    }
-
-    if (mode === "stream" || mode === "blob") {
-      const token =
-        typeof window !== "undefined" ? window.sessionStorage.getItem("admin_token") : null;
-      if (token) {
-        if (videoPreview.url?.startsWith("blob:")) {
-          URL.revokeObjectURL(videoPreview.url);
-        }
-        const fileName = portalVideoFileName(employeeId, employeeName || employeeId);
-        setVideoPreview({
-          url: buildVideoStreamUrl(testId, fileName, token, { cdn: true }),
-          title,
-          testId,
-          employeeId,
-          employeeName,
-          mode: "cdn",
-        });
-        return;
+        // fall through
       }
     }
 
@@ -2659,7 +2667,17 @@ export default function AdminDashboard() {
     setIsExportingPortal(true);
     setActionError(null);
     try {
-      const res = await fetch(`/api/admin/employees/export-portal?email=${encodeURIComponent(adminEmail)}`);
+      // Pass current table filters so TPM Upskilling / domain slices match the grid.
+      const params = new URLSearchParams();
+      if (adminEmail) params.set("email", adminEmail);
+      if (portalProductFilter && portalProductFilter !== "all") params.set("product", portalProductFilter);
+      if (portalDomainFilter && portalDomainFilter !== "all") params.set("domain", portalDomainFilter);
+      if (testStatusFilter && testStatusFilter !== "all") params.set("status", testStatusFilter);
+      if (portalCompletedDateFilter && portalCompletedDateFilter !== "all") {
+        params.set("completedOn", portalCompletedDateFilter);
+      }
+      if (testResultsSearch.trim()) params.set("search", testResultsSearch.trim());
+      const res = await fetch(`/api/admin/employees/export-portal?${params.toString()}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Export failed");
@@ -2669,17 +2687,32 @@ export default function AdminDashboard() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
-      link.setAttribute(
-        "download",
-        `employee_portal_test_results_${new Date().toISOString().split("T")[0]}.xlsx`
-      );
+      const filterBits = [
+        portalDomainFilter !== "all" ? portalDomainFilter : "",
+        portalProductFilter !== "all" ? portalProductFilter : "",
+      ]
+        .filter(Boolean)
+        .map((s) => s.replace(/[^\w.-]+/g, "_"))
+        .slice(0, 2);
+      const fileName = [
+        "employee_portal_test_results",
+        ...filterBits,
+        new Date().toISOString().split("T")[0],
+      ]
+        .filter(Boolean)
+        .join("_");
+      link.setAttribute("download", `${fileName}.xlsx`);
       link.style.visibility = "hidden";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setActionSuccess("Portal Excel export downloaded.");
-      setTimeout(() => setActionSuccess(null), 3000);
+      const scope =
+        filterBits.length > 0
+          ? ` (${filterBits.join(" · ")})`
+          : " (all domains/products, including TPM Upskilling)";
+      setActionSuccess(`Portal Excel export downloaded${scope}.`);
+      setTimeout(() => setActionSuccess(null), 4000);
     } catch (excelErr: any) {
       console.error("Failed to export Excel:", excelErr);
       setActionError(excelErr.message || "Failed to export portal data");
@@ -6989,13 +7022,18 @@ export default function AdminDashboard() {
                           variant="outline"
                           size="sm"
                           className="flex-1 sm:flex-none rounded-xl border-border text-primary hover:bg-secondary gap-1.5 font-bold text-xs"
+                          title="Export Employee Portal results to Excel. Uses current Domain/Product/Status filters. Includes TPM Upskilling, IPTel, SDM, PaCo, CSP, MSS/MGW, etc."
                         >
                           {isExportingPortal ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Download className="w-3.5 h-3.5" />
                           )}
-                          {isExportingPortal ? "Exporting..." : "Export to Excel"}
+                          {isExportingPortal
+                            ? "Exporting..."
+                            : portalProductFilter !== "all" || portalDomainFilter !== "all"
+                              ? "Export filtered Excel"
+                              : "Export to Excel (all + TPM)"}
                         </Button>
                       </div>
                     </div>
@@ -9224,16 +9262,23 @@ export default function AdminDashboard() {
                 ✕
               </button>
             </div>
-            <div className="bg-black rounded-b-3xl">
-              <PlyrVideoPlayer
-                key={`${videoPreview.url}-${videoPreview.mode}`}
-                src={videoPreview.url}
-                title={videoPreview.title}
-                autoPlay
-                onError={() => {
-                  void handleVideoPlaybackError();
-                }}
-              />
+            <div className="bg-black rounded-b-3xl min-h-[240px] flex items-center justify-center">
+              {videoPreview.mode === "loading" || !videoPreview.url ? (
+                <div className="flex flex-col items-center gap-3 py-16 text-white/80">
+                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <p className="text-sm font-medium">Loading recording…</p>
+                </div>
+              ) : (
+                <PlyrVideoPlayer
+                  key={`${videoPreview.url}-${videoPreview.mode}`}
+                  src={videoPreview.url}
+                  title={videoPreview.title}
+                  autoPlay
+                  onError={() => {
+                    void handleVideoPlaybackError();
+                  }}
+                />
+              )}
             </div>
           </Card>
         </div>

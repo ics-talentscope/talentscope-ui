@@ -89,8 +89,6 @@ export default function EmployeeLoginPage() {
   const [resetEmail, setResetEmail] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
-  const [resetOtp, setResetOtp] = useState("");
-  const [resetOtpSent, setResetOtpSent] = useState(false);
   const [org, setOrg] = useState<string | null>(null);
   
   // First time login choices modal states
@@ -98,13 +96,10 @@ export default function EmployeeLoginPage() {
     token: string;
     employee_id: string;
     full_name: string;
-    mustChangePassword: boolean;
   } | null>(null);
   const [changePasswordMode, setChangePasswordMode] = useState(false);
   const [modalNewPassword, setModalNewPassword] = useState("");
   const [modalConfirmPassword, setModalConfirmPassword] = useState("");
-  const [modalOtp, setModalOtp] = useState("");
-  const [modalOtpSent, setModalOtpSent] = useState(false);
   const [modalError, setModalError] = useState("");
   const [modalSubmitting, setModalSubmitting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
@@ -228,10 +223,6 @@ export default function EmployeeLoginPage() {
       setModalError("Passwords do not match.");
       return;
     }
-    if (!/^\d{6}$/.test(modalOtp)) {
-      setModalError("Enter the 6-digit verification code sent to your registered email.");
-      return;
-    }
     if (modalNewPassword.length < 8) {
       setModalError("Password must be at least 8 characters long.");
       return;
@@ -245,7 +236,7 @@ export default function EmployeeLoginPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${firstTimeModalData.token}`,
         },
-        body: JSON.stringify({ action: "change", password: modalNewPassword, otp: modalOtp }),
+        body: JSON.stringify({ action: "change", password: modalNewPassword }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -256,29 +247,6 @@ export default function EmployeeLoginPage() {
       router.push("/employee/dashboard");
     } catch (err: any) {
       setModalError(err.message || "An unexpected error occurred.");
-    } finally {
-      setModalSubmitting(false);
-    }
-  };
-
-  const handleFirstLoginOtp = async () => {
-    if (!firstTimeModalData) return;
-    setModalSubmitting(true);
-    setModalError("");
-    try {
-      const response = await fetch("/api/employee/auth/request-password-change-otp", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${firstTimeModalData.token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setModalError(data.error || "Could not send a verification code.");
-        return;
-      }
-      setModalOtpSent(true);
-      setModalError("");
-    } catch (err) {
-      setModalError(err instanceof Error ? err.message : "Could not send a verification code.");
     } finally {
       setModalSubmitting(false);
     }
@@ -321,11 +289,8 @@ export default function EmployeeLoginPage() {
           token: result.token,
           employee_id: result.employee?.employee_id || trimmedId,
           full_name: result.employee?.full_name || trimmedId,
-          mustChangePassword: result.mustChangePassword === true,
         });
-        setChangePasswordMode(result.mustChangePassword === true);
-        setModalOtp("");
-        setModalOtpSent(false);
+        setChangePasswordMode(false);
         setModalError("");
         return;
       }
@@ -360,37 +325,19 @@ export default function EmployeeLoginPage() {
       setError("Please enter your Employee ID.");
       return;
     }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    
     setLoading(true);
     try {
-      if (!resetOtpSent) {
-        const requestResponse = await fetch("/api/employee/auth/request-password-reset-otp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ employee_id: trimmedId, email: resetEmail }),
-        });
-        const requestData = await requestResponse.json().catch(() => ({}));
-        if (!requestResponse.ok) {
-          setError(requestData?.error || "Could not send a verification code.");
-          return;
-        }
-        setResetOtpSent(true);
-        setInfo(requestData?.message || "A verification code has been sent to your registered email.");
-        return;
-      }
-      if (!/^\d{6}$/.test(resetOtp)) {
-        setError("Enter the 6-digit verification code.");
-        return;
-      }
-      if (resetNewPassword !== resetConfirmPassword) {
-        setError("Passwords do not match.");
-        return;
-      }
       const response = await fetch("/api/employee/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           employee_id: trimmedId,
-          otp: resetOtp,
+          email: resetEmail,
           password: resetNewPassword
         }),
       });
@@ -412,8 +359,6 @@ export default function EmployeeLoginPage() {
       setResetEmail("");
       setResetNewPassword("");
       setResetConfirmPassword("");
-      setResetOtp("");
-      setResetOtpSent(false);
     } catch (err: any) {
       setError(err?.message || "An unexpected error occurred.");
     } finally {
@@ -857,7 +802,7 @@ export default function EmployeeLoginPage() {
               </h1>
               <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
                 {isResetPassword
-                  ? resetOtpSent ? "Enter the code sent to your registered email and choose a new password." : "We will send a verification code to your registered email."
+                  ? "Verify your Employee ID and email to set a new password."
                   : org
                     ? `Sign in to ${org} with your Employee ID and password.`
                     : "Sign in with your Employee ID and password."}
@@ -914,8 +859,6 @@ export default function EmployeeLoginPage() {
                         setError("");
                         setInfo("");
                         setIsResetPassword(true);
-                        setResetOtpSent(false);
-                        setResetOtp("");
                       }}
                       className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
                     >
@@ -946,11 +889,7 @@ export default function EmployeeLoginPage() {
                   <input
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={employeeId}
-                    onChange={(event) => {
-                      setEmployeeId(event.target.value);
-                      setResetOtpSent(false);
-                      setResetOtp("");
-                    }}
+                    onChange={(event) => setEmployeeId(event.target.value)}
                     placeholder="e.g. EMP001"
                     required
                   />
@@ -961,28 +900,11 @@ export default function EmployeeLoginPage() {
                     type="email"
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={resetEmail}
-                    onChange={(event) => {
-                      setResetEmail(event.target.value);
-                      setResetOtpSent(false);
-                      setResetOtp("");
-                    }}
-                    placeholder="Your registered email"
-                    required
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    placeholder="e.g. sofia@example.com (Leave blank if none)"
                   />
                 </div>
-                {resetOtpSent && <div>
-                  <label className="block text-xs font-bold text-foreground mb-1.5">Email verification code</label>
-                  <input
-                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium tracking-[0.3em] placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
-                    value={resetOtp}
-                    onChange={(event) => setResetOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                    placeholder="6-digit code"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    required
-                  />
-                </div>}
-                {resetOtpSent && <div>
+                <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
                   <PasswordInput
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
@@ -992,8 +914,8 @@ export default function EmployeeLoginPage() {
                     required
                     autoComplete="new-password"
                   />
-                </div>}
-                {resetOtpSent && <div>
+                </div>
+                <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">Confirm New Password</label>
                   <PasswordInput
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
@@ -1003,13 +925,13 @@ export default function EmployeeLoginPage() {
                     required
                     autoComplete="new-password"
                   />
-                </div>}
+                </div>
                 <Button
                   className="w-full px-4 py-2.5 rounded-xl bg-primary text-white font-bold shadow-lg shadow-indigo-500/30 transition-all duration-200"
                   type="submit"
                   disabled={loading}
                 >
-                  {loading ? (resetOtpSent ? "Resetting password…" : "Sending code…") : resetOtpSent ? "Reset Password" : "Send verification code"}
+                  {loading ? "Resetting password…" : "Reset Password"}
                 </Button>
                 <div className="text-center mt-1">
                   <button
@@ -1018,8 +940,6 @@ export default function EmployeeLoginPage() {
                       setError("");
                       setInfo("");
                       setIsResetPassword(false);
-                      setResetOtpSent(false);
-                      setResetOtp("");
                     }}
                     className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors"
                   >
@@ -1059,11 +979,9 @@ export default function EmployeeLoginPage() {
               <div className="space-y-4">
                 <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-4 text-xs text-muted-foreground leading-relaxed">
                   <p className="font-bold text-primary mb-1">First Time Login</p>
-                  {firstTimeModalData.mustChangePassword
-                    ? "This is your initial Employee ID password. Verify your registered email and choose a new password to continue."
-                    : "You are logging in for the first time. You can set a new password now or continue with your current sign-in method."}
+                  You are logging in with your initial assigned password. You can choose to keep this password or set a new custom one now.
                 </div>
-                {!firstTimeModalData.mustChangePassword && <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2">
                   <Button
                     onClick={handleKeepPassword}
                     disabled={modalSubmitting}
@@ -1077,37 +995,16 @@ export default function EmployeeLoginPage() {
                       setChangePasswordMode(true);
                       setModalNewPassword("");
                       setModalConfirmPassword("");
-                      setModalOtp("");
-                      setModalOtpSent(false);
                     }}
                     disabled={modalSubmitting}
                     className="w-full py-2.5 rounded-xl border-border font-bold"
                   >
                     Set a New Password
                   </Button>
-                </div>}
+                </div>
               </div>
             ) : (
               <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
-                <div>
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <label htmlFor="first-login-otp" className="block text-xs font-bold text-foreground">Email verification code</label>
-                    <Button type="button" size="sm" variant="outline" onClick={handleFirstLoginOtp} disabled={modalSubmitting}>
-                      {modalSubmitting ? "Sending…" : modalOtpSent ? "Resend code" : "Send code"}
-                    </Button>
-                  </div>
-                  <input
-                    id="first-login-otp"
-                    required
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium tracking-[0.3em] outline-none focus:border-indigo-500 transition-all"
-                    placeholder="6-digit code"
-                    value={modalOtp}
-                    onChange={(e) => setModalOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  />
-                </div>
                 <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
                   <PasswordInput
@@ -1131,20 +1028,16 @@ export default function EmployeeLoginPage() {
                   />
                 </div>
                 <div className="flex gap-2 pt-2">
-                  {!firstTimeModalData.mustChangePassword && <Button
+                  <Button
                     type="button"
                     variant="ghost"
-                    onClick={() => {
-                      setChangePasswordMode(false);
-                      setModalOtp("");
-                      setModalOtpSent(false);
-                    }}
+                    onClick={() => setChangePasswordMode(false)}
                     disabled={modalSubmitting}
                     className="flex-1 py-2.5 rounded-xl text-xs font-bold"
                   >
                     ← Back
-                  </Button>}
-                  <Button type="submit" disabled={modalSubmitting || !modalOtpSent} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
+                  </Button>
+                  <Button type="submit" disabled={modalSubmitting} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
                     {modalSubmitting ? "Saving..." : "Save & Continue"}
                   </Button>
                 </div>
