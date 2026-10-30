@@ -4,6 +4,10 @@
 
 export const EMPLOYEE_PROCTOR_MAX_VIOLATIONS = 3;
 export const EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS = 2500;
+/** Longer gap between Face Missing strikes — short detector flicker must not burn 3 strikes in ~15s. */
+export const EMPLOYEE_PROCTOR_FACE_MISSING_COOLDOWN_MS = 45_000;
+/** Continuous no-face duration before a Face Missing strike (was 3s; too sensitive for clmtrackr). */
+export const EMPLOYEE_PROCTOR_FACE_MISSING_SECONDS = 10;
 /** Ignore proctor violations briefly after entering the running phase (camera/fullscreen prompts). */
 export const EMPLOYEE_PROCTOR_START_GRACE_MS = 20_000;
 
@@ -163,9 +167,32 @@ export function recordProctorViolation(
   const lastAt = existing.lastViolationAt ? new Date(existing.lastViolationAt).getTime() : 0;
   const nowMs = Date.now();
 
-  // Server-side cooldown — ignore duplicate bursts from client
-  if (lastAt && nowMs - lastAt < EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS) {
+  // Server-side cooldown — ignore duplicate bursts from client.
+  // Face Missing needs a longer window: detector flicker was auto-submitting in ~15s.
+  const isFaceMissing = /face missing|face not/i.test(violationType);
+  const cooldownMs = isFaceMissing
+    ? EMPLOYEE_PROCTOR_FACE_MISSING_COOLDOWN_MS
+    : EMPLOYEE_PROCTOR_VIOLATION_COOLDOWN_MS;
+  if (lastAt && nowMs - lastAt < cooldownMs) {
     return existing;
+  }
+
+  const classified = classifyProctorAnomaly(violationType);
+  const entry = {
+    type: violationType.slice(0, 120),
+    timestamp: now,
+    category: opts?.category || classified.category,
+    severity: opts?.severity || classified.severity,
+    detail: opts?.detail ? opts.detail.slice(0, 240) : undefined,
+  };
+
+  // Face Missing is advisory only — models false-negative while video still shows face.
+  if (isFaceMissing && !opts?.forceAutoSubmit) {
+    return {
+      ...existing,
+      lastViolationAt: now,
+      violations: [...existing.violations, entry],
+    };
   }
 
   const nextCount = Math.min(
@@ -177,23 +204,12 @@ export function recordProctorViolation(
     existing.autoSubmitted ||
     nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS;
 
-  const classified = classifyProctorAnomaly(violationType);
-
   return {
     ...existing,
     warningCount: nextCount,
     autoSubmitted,
     lastViolationAt: now,
-    violations: [
-      ...existing.violations,
-      {
-        type: violationType.slice(0, 120),
-        timestamp: now,
-        category: opts?.category || classified.category,
-        severity: opts?.severity || classified.severity,
-        detail: opts?.detail ? opts.detail.slice(0, 240) : undefined,
-      },
-    ],
+    violations: [...existing.violations, entry],
   };
 }
 

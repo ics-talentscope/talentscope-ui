@@ -78,6 +78,55 @@ interface LoadedState {
   questions: TestQuestion[];
 }
 
+async function fetchTestWithBuffering(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  bufferOnLoad: boolean,
+  setBufferStatus: (status: string | null) => void,
+  isCancelled: () => boolean,
+): Promise<Response | null> {
+  const retryDelays = bufferOnLoad ? [500, 1000, 1500, 2000, 3000, 4000] : [];
+  for (let attempt = 0; ; attempt += 1) {
+    if (isCancelled()) return null;
+    if (attempt > 0) {
+      setBufferStatus(`Waiting for your test to sync (${attempt}/${retryDelays.length})…`);
+      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1]));
+      if (isCancelled()) return null;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(input, { ...init, cache: "no-store" });
+    } catch (error) {
+      if (isCancelled()) return null;
+      if (attempt < retryDelays.length) continue;
+      setBufferStatus(null);
+      throw error;
+    }
+
+    if (isCancelled()) return null;
+    if (response.ok) {
+      setBufferStatus(null);
+      return response;
+    }
+
+    const body = await response.clone().text();
+    let message = "";
+    try {
+      message = JSON.parse(body).error ?? "";
+    } catch {
+      message = body;
+    }
+    const questionSyncPending =
+      response.status === 400 &&
+      message === "This assessment has no questions assigned yet. Please contact your administrator.";
+    const transientRead = [404, 500, 502, 503, 504].includes(response.status) || questionSyncPending;
+    if (transientRead && attempt < retryDelays.length) continue;
+    setBufferStatus(null);
+    return response;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inline helpers (pure — no client-only dependencies)
 // ---------------------------------------------------------------------------
@@ -103,7 +152,7 @@ function DifficultyBadge({ d }: { d: string }) {
 // CLIENT SUB-COMPONENT
 // =====================================================================
 
-export default function TestRunnerClient({ testId }: { testId: string }) {
+export default function TestRunnerClient({ testId, bufferOnLoad = false }: { testId: string; bufferOnLoad?: boolean }) {
   const router = useRouter();
 
   // ── state ──────────────────────────────────────────────────────
@@ -112,6 +161,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
 
   const [phase,       setPhase]       = useState<Phase>("loading");
   const [err,         setErr]         = useState<string | null>(null);
+  const [bufferStatus, setBufferStatus] = useState<string | null>(null);
   const [test,        setTest]        = useState<Test | null>(null);
   const [questions,   setQuestions]   = useState<TestQuestion[] | null>(null);
   const [currentIdx,  setCurrentIdx]  = useState(0);
@@ -193,12 +243,15 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
     if (!token) return;
     let cancelled = false;
     (async () => {
+      const fetchWithBuffer = (input: RequestInfo | URL, init?: RequestInit) =>
+        fetchTestWithBuffering(input, init, bufferOnLoad, setBufferStatus, () => cancelled);
       try {
-        const r = await fetch(`/api/employee/tests/${testId}`, {
+        const r = await fetchWithBuffer(`/api/employee/tests/${testId}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
         });
+        if (!r || cancelled) return;
         if (!r.ok) {
           const errBody = await r.text();
           let message = "Failed to load test";
@@ -265,7 +318,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       cancelled = true;
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [testId, token]);
+  }, [testId, token, bufferOnLoad]);
 
   // ── auto-save progress every 10 s ─────────────────────────────
   useEffect(() => {
@@ -676,7 +729,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   if (phase === "loading") {
     return (
       <div className="py-16 mx-auto max-w-3xl">
-        <PageLoadingSkeleton label="Preparing your test" />
+        <PageLoadingSkeleton label={bufferStatus ? "Buffering your test" : "Preparing your test"} />
+        {bufferStatus && <p className="mt-4 text-center text-sm text-muted-foreground">{bufferStatus}</p>}
       </div>
     );
   }
