@@ -22,7 +22,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" className="aqua" suppressHydrationWarning>
       <head />
       <body
         className={`${jakarta.variable} ${jakarta.className} bg-background text-foreground antialiased transition-colors duration-300 min-h-screen`}
@@ -32,21 +32,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
            (function() {
              try {
                var saved = localStorage.getItem('theme');
-               var themes = ["light", "dark", "blue", "purple", "emerald", "rose", "sunset"];
-               if (localStorage.getItem('theme-default-dark-v2') !== '1') {
-                 localStorage.setItem('theme-default-dark-v2', '1');
-                 if (!saved || saved === 'light' || themes.indexOf(saved) === -1) {
-                   saved = 'dark';
-                   localStorage.setItem('theme', 'dark');
-                 }
-               }
-               var theme = saved && themes.indexOf(saved) !== -1 ? saved : "dark";
-               document.documentElement.classList.remove("dark", "blue", "purple", "emerald", "rose", "sunset");
-               if (theme !== "light") {
-                 document.documentElement.classList.add(theme);
-               }
+               var themes = ["misty-mountains", "aqua", "mustangs"];
+               var theme = saved && themes.indexOf(saved) !== -1 ? saved : "aqua";
+               document.documentElement.classList.remove("dark", "blue", "purple", "emerald", "rose", "sunset", "misty-mountains", "aqua", "mustangs");
+               document.documentElement.classList.add(theme);
+               localStorage.setItem('theme', theme);
              } catch (e) {
-               document.documentElement.classList.add("dark");
+               document.documentElement.classList.add("aqua");
              }
            })();
          `}

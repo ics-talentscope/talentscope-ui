@@ -2,17 +2,13 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { useTheme, Theme } from "@/components/ThemeProvider";
-import { Sun, Moon, Palette } from "lucide-react";
+import { Palette } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const themes = [
-  { id: "light", label: "Light", icon: Sun },
-  { id: "dark", label: "Dark", icon: Moon },
-  { id: "blue", label: "Blue", icon: Palette },
-  { id: "purple", label: "Purple", icon: Palette },
-  { id: "emerald", label: "Emerald", icon: Palette },
-  { id: "rose", label: "Rose", icon: Palette },
-  { id: "sunset", label: "Sunset", icon: Palette },
+  { id: "misty-mountains", label: "Misty Mountains", icon: Palette },
+  { id: "aqua", label: "Aqua", icon: Palette },
+  { id: "mustangs", label: "Mustangs", icon: Palette },
 ];
 
 export default function ThemeToggle() {
@@ -41,7 +37,7 @@ export default function ThemeToggle() {
     );
   }
 
-  const activeTheme = themes.find((t) => t.id === theme) || themes[0];
+  const activeTheme = themes.find((t) => t.id === theme) || themes[1];
   const ActiveIcon = activeTheme.icon;
 
   return (

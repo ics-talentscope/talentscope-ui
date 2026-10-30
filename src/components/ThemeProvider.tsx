@@ -2,9 +2,9 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 
-export type Theme = "light" | "dark" | "blue" | "purple" | "emerald" | "rose" | "sunset";
+export type Theme = "misty-mountains" | "aqua" | "mustangs";
 
-export const THEMES: Theme[] = ["light", "dark", "blue", "purple", "emerald", "rose", "sunset"];
+export const THEMES: Theme[] = ["misty-mountains", "aqua", "mustangs"];
 
 interface ThemeContextType {
   theme: Theme;
@@ -16,38 +16,21 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("dark");
+  const [theme, setThemeState] = useState<Theme>("aqua");
   const [mounted, setMounted] = useState(false);
 
   const applyTheme = (newTheme: Theme) => {
     const root = document.documentElement;
-    root.classList.remove("dark", "blue", "purple", "emerald", "rose", "sunset");
-    if (newTheme !== "light") {
-      root.classList.add(newTheme);
-    }
+    root.classList.remove("dark", "blue", "purple", "emerald", "rose", "sunset", ...THEMES);
+    root.classList.add(newTheme);
   };
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") as Theme;
-    const migrated = localStorage.getItem("theme-default-dark-v2") === "1";
-    if (!migrated) {
-      localStorage.setItem("theme-default-dark-v2", "1");
-      if (!THEMES.includes(savedTheme) || savedTheme === "light") {
-        setThemeState("dark");
-        applyTheme("dark");
-        localStorage.setItem("theme", "dark");
-        setMounted(true);
-        return;
-      }
-    }
-    if (THEMES.includes(savedTheme)) {
-      setThemeState(savedTheme);
-      applyTheme(savedTheme);
-    } else {
-      setThemeState("dark");
-      applyTheme("dark");
-      localStorage.setItem("theme", "dark");
-    }
+    const savedTheme = localStorage.getItem("theme");
+    const selectedTheme: Theme = THEMES.includes(savedTheme as Theme) ? (savedTheme as Theme) : "aqua";
+    setThemeState(selectedTheme);
+    applyTheme(selectedTheme);
+    localStorage.setItem("theme", selectedTheme);
     setMounted(true);
   }, []);
 
@@ -57,9 +40,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     applyTheme(newTheme);
   };
 
-  const toggleTheme = () => {
-    setTheme(theme === "light" ? "dark" : "light");
-  };
+  const toggleTheme = () => setTheme(theme === "aqua" ? "mustangs" : "aqua");
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
