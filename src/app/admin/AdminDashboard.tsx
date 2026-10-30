@@ -1319,6 +1319,7 @@ export default function AdminDashboard() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [isEmployeesLoading, setIsEmployeesLoading] = useState(false);
   const [isExportingPortal, setIsExportingPortal] = useState(false);
+  const [isExportingPortalSummary, setIsExportingPortalSummary] = useState(false);
   const [isDispatchingMails, setIsDispatchingMails] = useState(false);
   const [portalMailSendingId, setPortalMailSendingId] = useState<string | null>(null);
   const [isBulkPortalMailing, setIsBulkPortalMailing] = useState(false);
@@ -2832,6 +2833,40 @@ export default function AdminDashboard() {
       setTimeout(() => setActionError(null), 5000);
     } finally {
       setIsExportingPortal(false);
+    }
+  };
+
+  const handleExportPortalSummary = async () => {
+    if (isExportingPortalSummary) return;
+    setIsExportingPortalSummary(true);
+    setActionError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/employees/export-portal-summary?email=${encodeURIComponent(adminEmail)}`
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Summary export failed");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `employee_portal_summary_${new Date().toISOString().split("T")[0]}.xlsx`;
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setActionSuccess("Portal summary downloaded.");
+      setTimeout(() => setActionSuccess(null), 3000);
+    } catch (summaryErr: any) {
+      console.error("Failed to export portal summary:", summaryErr);
+      setActionError(summaryErr.message || "Failed to export portal summary");
+      setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setIsExportingPortalSummary(false);
     }
   };
 
@@ -7110,7 +7145,7 @@ export default function AdminDashboard() {
                           </select>
                         </div>
                       </div>
-                      <div className="flex w-full justify-end xl:w-auto">
+                      <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto">
                         <Button
                           onClick={handleExportPortalData}
                           disabled={isExportingPortal}
@@ -7124,6 +7159,20 @@ export default function AdminDashboard() {
                             <Download className="w-3.5 h-3.5" />
                           )}
                           {isExportingPortal ? "Exporting..." : "Export to Excel"}
+                        </Button>
+                        <Button
+                          onClick={handleExportPortalSummary}
+                          disabled={isExportingPortalSummary}
+                          variant="outline"
+                          size="sm"
+                          className="w-full rounded-xl border-border text-primary hover:bg-secondary gap-1.5 font-bold text-xs xl:w-auto"
+                        >
+                          {isExportingPortalSummary ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5" />
+                          )}
+                          {isExportingPortalSummary ? "Exporting..." : "Export Summary"}
                         </Button>
                       </div>
                     </div>
