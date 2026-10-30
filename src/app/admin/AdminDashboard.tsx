@@ -1374,6 +1374,12 @@ export default function AdminDashboard() {
   const [logsSearch, setLogsSearch] = useState("");
   const [logsModuleFilter, setLogsModuleFilter] = useState("all");
   const [logsStatusFilter, setLogsStatusFilter] = useState("all");
+  const [logsLevelFilter, setLogsLevelFilter] = useState("all");
+  const [logsUserFilter, setLogsUserFilter] = useState("");
+  const [logsFromFilter, setLogsFromFilter] = useState("");
+  const [logsToFilter, setLogsToFilter] = useState("");
+  const [logsExportFormat, setLogsExportFormat] = useState("csv");
+  const [logMetrics, setLogMetrics] = useState<Record<string, number>>({});
 
   // Ingestion status state
   const [pipelineStatus, setPipelineStatus] = useState("Ingestion: Idle");
@@ -1480,7 +1486,7 @@ export default function AdminDashboard() {
       }
       loadLogs();
     }
-  }, [logsModuleFilter, logsStatusFilter, logsSearch]);
+  }, [logsModuleFilter, logsStatusFilter, logsSearch, logsLevelFilter, logsUserFilter, logsFromFilter, logsToFilter]);
 
   useEffect(() => {
     const flushPending = () => {
@@ -2835,16 +2841,23 @@ export default function AdminDashboard() {
     if (!readAdminAccessFlags().permissions.systemLogs) return;
     setIsSystemLogsLoading(true);
     try {
-      const moduleParam = logsModuleFilter;
-      const statusParam = logsStatusFilter;
-      const searchParam = encodeURIComponent(logsSearch);
-      const data = await fetchJsonWithRetry(
-        `/api/admin/logs?module=${moduleParam}&status=${statusParam}&search=${searchParam}`,
-        { timeoutMs: 30000, retries: 2, label: "logs" }
-      );
+      const params = new URLSearchParams({
+        module: logsModuleFilter,
+        status: logsStatusFilter,
+        level: logsLevelFilter === "all" ? "" : logsLevelFilter,
+        user: logsUserFilter,
+        from: logsFromFilter,
+        to: logsToFilter,
+        search: logsSearch,
+      });
+      const [data, metrics] = await Promise.all([
+        fetchJsonWithRetry(`/api/admin/logs?${params}`, { timeoutMs: 30000, retries: 2, label: "logs" }),
+        fetchJsonWithRetry("/api/admin/logs/metrics", { timeoutMs: 30000, retries: 1, label: "log metrics" }),
+      ]);
       if (Array.isArray(data?.logs)) {
         setSystemLogs(data.logs);
         setSystemLogsTotal(typeof data.total === "number" ? data.total : data.logs.length);
+        if (metrics && typeof metrics === "object") setLogMetrics(metrics);
       } else {
         console.warn("[admin] logs payload missing/timed out; keeping prior state");
       }
@@ -3505,13 +3518,15 @@ export default function AdminDashboard() {
 
   const handleDownloadSystemLogs = async () => {
     try {
-      const res = await adminFetch(`/api/admin/logs?module=${logsModuleFilter}&download=true`);
+      const res = await adminFetch(
+        `/api/admin/logs?module=${encodeURIComponent(logsModuleFilter)}&format=${logsExportFormat}&status=${logsStatusFilter}&level=${logsLevelFilter === "all" ? "" : logsLevelFilter}&user=${encodeURIComponent(logsUserFilter)}&from=${logsFromFilter}&to=${logsToFilter}&search=${encodeURIComponent(logsSearch)}`
+      );
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `system-logs-${logsModuleFilter}.txt`;
+      link.download = `system-logs-${logsModuleFilter}.${logsExportFormat}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -8765,6 +8780,16 @@ export default function AdminDashboard() {
             </div>
 
             <div className="flex gap-2">
+              <select
+                aria-label="Log export format"
+                value={logsExportFormat}
+                onChange={(e) => setLogsExportFormat(e.target.value)}
+                className="h-8 rounded-xl border border-border bg-background px-2 text-[10px] font-bold"
+              >
+                <option value="csv">CSV</option>
+                <option value="xlsx">Excel</option>
+                <option value="json">JSON</option>
+              </select>
               <Button
                 onClick={() => matchScoreInputRef.current?.click()}
                 disabled={isImportingMatchScores}
@@ -8946,8 +8971,26 @@ export default function AdminDashboard() {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                ["Requests", logMetrics.totalRequests],
+                ["Successful", logMetrics.successfulRequests],
+                ["Failed", logMetrics.failedRequests],
+                ["Slow APIs", logMetrics.slowApis],
+                ["DB errors", logMetrics.databaseErrors],
+                ["AI errors", logMetrics.aiServiceErrors],
+                ["Security events", logMetrics.securityEvents],
+                ["Active users", logMetrics.activeUsers],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl border border-border bg-muted/30 px-3 py-2">
+                  <p className="text-[9px] font-bold uppercase text-muted-foreground">{label}</p>
+                  <p className="text-sm font-black text-foreground">{Number(value || 0).toLocaleString()}</p>
+                </div>
+              ))}
+            </div>
+
             {/* Filters Row */}
-            <div className="flex flex-col sm:flex-row gap-3 items-center shrink-0">
+            <div className="flex flex-col gap-3 shrink-0">
               <div className="w-full sm:flex-1 relative">
                 <input
                   type="text"
@@ -8957,8 +9000,7 @@ export default function AdminDashboard() {
                   className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                 />
               </div>
-              
-              <div className="flex gap-3 w-full sm:w-auto">
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
                 <select
                   value={logsModuleFilter}
                   onChange={(e) => setLogsModuleFilter(e.target.value)}
@@ -8974,6 +9016,10 @@ export default function AdminDashboard() {
                   <option value="auth">🔐 Sign-in</option>
                   <option value="audit">🛡️ Admin actions</option>
                   <option value="error">⚠️ System Errors</option>
+                  <option value="http">🌐 API Requests</option>
+                  <option value="database">🗄️ Database</option>
+                  <option value="ai">✨ AI Service</option>
+                  <option value="security">🔒 Security</option>
                 </select>
 
                 <select
@@ -8986,6 +9032,43 @@ export default function AdminDashboard() {
                   <option value="failed">❌ Failed</option>
                   <option value="warning">⚠️ Warning</option>
                 </select>
+                <select
+                  value={logsLevelFilter}
+                  onChange={(e) => setLogsLevelFilter(e.target.value)}
+                  aria-label="Filter logs by level"
+                  className="rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200"
+                >
+                  <option value="all">All levels</option>
+                  <option value="DEBUG">Debug</option>
+                  <option value="INFO">Info</option>
+                  <option value="WARNING">Warning</option>
+                  <option value="ERROR">Error</option>
+                  <option value="CRITICAL">Critical</option>
+                </select>
+                <input
+                  type="search"
+                  placeholder="Filter user"
+                  aria-label="Filter logs by user"
+                  value={logsUserFilter}
+                  onChange={(e) => setLogsUserFilter(e.target.value)}
+                  className="rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 text-xs"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    aria-label="Logs from date"
+                    value={logsFromFilter}
+                    onChange={(e) => setLogsFromFilter(e.target.value)}
+                    className="min-w-0 w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-2 py-2 text-xs"
+                  />
+                  <input
+                    type="date"
+                    aria-label="Logs to date"
+                    value={logsToFilter}
+                    onChange={(e) => setLogsToFilter(e.target.value)}
+                    className="min-w-0 w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-2 py-2 text-xs"
+                  />
+                </div>
               </div>
             </div>
 
@@ -9029,6 +9112,24 @@ export default function AdminDashboard() {
                           <span className="text-slate-200 font-black shrink-0">
                             {log.action}
                           </span>
+                          {log.status_code != null && (
+                            <span className="text-slate-400 shrink-0">HTTP {log.status_code}</span>
+                          )}
+                          {log.execution_time != null && (
+                            <span className="text-slate-400 shrink-0">{log.execution_time} ms</span>
+                          )}
+                          {log.table_name && (
+                            <span className="text-indigo-300 shrink-0">
+                              {log.db_operation} {log.table_name}
+                            </span>
+                          )}
+                          {log.model && (
+                            <span className="text-violet-300 shrink-0">
+                              {log.model}
+                              {log.input_tokens != null ? ` · ${log.input_tokens} in` : ""}
+                              {log.output_tokens != null ? ` / ${log.output_tokens} out` : ""}
+                            </span>
+                          )}
                           <span className={`shrink-0 ${
                             isError ? "text-rose-500 font-extrabold" :
                             isWarning ? "text-amber-500 font-extrabold" :
@@ -9039,6 +9140,26 @@ export default function AdminDashboard() {
                           <span className="text-slate-450 whitespace-pre-wrap break-all">
                             {log.details}
                           </span>
+                          {log.request_id && (
+                            <span className="text-slate-500 shrink-0">request {log.request_id}</span>
+                          )}
+                          {log.endpoint && (
+                            <span className="basis-full text-slate-400 break-all">{log.endpoint}</span>
+                          )}
+                          {(log.error_message || log.stack_trace || log.request_payload || log.response_payload) && (
+                            <details className="basis-full text-slate-400">
+                              <summary className="cursor-pointer">Safe payload / error details</summary>
+                              <pre className="mt-1 whitespace-pre-wrap break-all text-[9px] text-slate-400">
+                                {JSON.stringify({
+                                  requestPayload: log.request_payload,
+                                  responsePayload: log.response_payload,
+                                  error: log.error_message,
+                                  stackTrace: log.stack_trace,
+                                  userAgent: log.user_agent,
+                                }, null, 2)}
+                              </pre>
+                            </details>
+                          )}
                         </div>
                       </div>
                     );
