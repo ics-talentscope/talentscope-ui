@@ -22,14 +22,26 @@ export function getPortalPrimaryProctoring(account: {
   const proctoring = primary?.proctoring;
   if (!proctoring) return null;
 
-  const violations = Array.isArray(proctoring.violations) ? proctoring.violations : [];
-  const flagCount = proctoring.warningCount ?? violations.length;
+  const raw = Array.isArray(proctoring.violations) ? proctoring.violations : [];
+  // Face Missing is advisory-only and can fire repeatedly; show at most one.
+  const isFaceMissing = (t: string) => {
+    const s = String(t || "").toLowerCase();
+    return s.includes("face missing") || s.includes("face not");
+  };
+  const violations: PortalProctorViolation[] = [];
+  let faceKept = false;
+  for (const v of raw) {
+    if (isFaceMissing(v?.type || "")) {
+      if (faceKept) continue;
+      faceKept = true;
+    }
+    violations.push(v);
+  }
+  const hardWarnings = Number(proctoring.warningCount) || 0;
+  const flagCount = Math.max(hardWarnings, violations.length);
   if (flagCount <= 0 && violations.length === 0) return null;
 
-  return {
-    flagCount: Math.max(flagCount, violations.length),
-    violations,
-  };
+  return { flagCount, violations };
 }
 
 export function formatProctorViolationsForExport(
