@@ -15,7 +15,6 @@ import { CenteredPageLoading } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import ThemeToggle from "@/components/ThemeToggle";
 import { buildRadarDataFromBreakdown, buildRadarDataFromResults, computeReadinessScore, computeSkillLevel } from "@/lib/dashboard-analytics";
 
 import {
@@ -259,7 +258,6 @@ export function DashboardInner() {
       <div className="bg-card border-b border-border/70 text-foreground px-6 pt-8 pb-10 relative">
         <div className="max-w-full mx-auto px-6 md:px-12 flex flex-wrap items-end justify-between gap-4 relative z-10">
           <div className="flex items-center gap-4">
-            <ThemeToggle />
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary mb-1">Employee portal</p>
               <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-foreground">Dashboard</h1>

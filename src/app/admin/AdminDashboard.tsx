@@ -5162,6 +5162,18 @@ export default function AdminDashboard() {
     }));
   }, [visibleRequirementRows]);
 
+  const requirementRowStripeById = useMemo(() => {
+    const stripes = new Map<string, "odd" | "even">();
+    let rowIndex = 0;
+    for (const group of requirementUploadGroups) {
+      for (const row of group.rows) {
+        stripes.set(row.jd.id, rowIndex % 2 === 0 ? "odd" : "even");
+        rowIndex += 1;
+      }
+    }
+    return stripes;
+  }, [requirementUploadGroups]);
+
   const handleToggleJdSelect = (id: string) => {
     setSelectedJdIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -5443,6 +5455,18 @@ export default function AdminDashboard() {
     }
     return restGroups;
   }, [filteredEmployees, selectedPool, selectedPoolIdSet]);
+
+  const corpPoolRowStripeById = useMemo(() => {
+    const stripes = new Map<string, "odd" | "even">();
+    let rowIndex = 0;
+    for (const group of corpPoolEmployeeGroups) {
+      for (const employee of group.employees) {
+        stripes.set(employee.employee_id, rowIndex % 2 === 0 ? "odd" : "even");
+        rowIndex += 1;
+      }
+    }
+    return stripes;
+  }, [corpPoolEmployeeGroups]);
 
   const shortlistedCount = scoredEmployees.filter((emp) => emp.shortlisted).length;
   const selectedUnshortlistedIds = selectedEmployeeIds.filter((id) =>
@@ -5903,8 +5927,8 @@ export default function AdminDashboard() {
 
                     {/* Requirements Table */}
                     <div className="border border-border rounded-2xl overflow-hidden">
-                      <div className="overflow-auto max-h-[500px]">
-                        <table className="w-full text-left border-collapse text-xs">
+                      <div className="requirements-table-scroll overflow-auto max-h-[500px]">
+                        <table className="admin-grid-table requirements-table min-w-[1420px] w-full text-left border-collapse">
                           <thead>
                             <tr className="bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-border text-slate-500 font-extrabold uppercase tracking-wider text-[10px] sticky top-0 z-10">
                               <th className="p-3 w-10 text-center">
@@ -5921,9 +5945,9 @@ export default function AdminDashboard() {
                               <th className="p-3 w-8"></th>
                               <th className="p-3 w-20">BR ID</th>
                               <th className="p-3 w-1/5">Requirement / File</th>
-                              <th className="p-3 w-1/5">Mandatory Skills</th>
-                              <th className="p-3 w-1/5">Primary Skills</th>
-                              <th className="p-3 w-40">Creator / RM</th>
+                              <th className="p-3 w-1/5 min-w-[15rem]">Mandatory Skills</th>
+                              <th className="p-3 w-1/5 min-w-[15rem]">Primary Skills</th>
+                              <th className="p-3 w-64 min-w-[16rem]">Creator / RM</th>
                               <th className="p-3 w-28">Created Date</th>
                               <th className="p-3 w-40 text-center">Actions</th>
                             </tr>
@@ -5971,7 +5995,15 @@ export default function AdminDashboard() {
 
                                 return (
                                   <React.Fragment key={j.id}>
-                                    <tr className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors duration-150 ${
+                                    <tr
+                                      data-row-shade={requirementRowStripeById.get(j.id)}
+                                      data-row-highlighted={
+                                        selectedJdIds.includes(j.id) || isActive || isDuplicate
+                                      }
+                                      data-selected={selectedJdIds.includes(j.id)}
+                                      data-active={isActive}
+                                      data-duplicate={isDuplicate}
+                                      className={`admin-data-row hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors duration-150 ${
                                       selectedJdIds.includes(j.id) ? "bg-indigo-50/20 dark:bg-indigo-950/20" : ""
                                     } ${
                                       isActive ? "bg-indigo-50/10 dark:bg-indigo-950/10" : ""
@@ -6071,7 +6103,7 @@ export default function AdminDashboard() {
                                           </div>
                                         )}
                                       </td>
-                                      <td className="p-3">
+                                      <td className="p-3 min-w-[15rem]">
                                         <RequirementSkillChips
                                           skills={mandatorySkills}
                                           emptyLabel="No mandatory skills"
@@ -6097,7 +6129,7 @@ export default function AdminDashboard() {
                                           chipClassName="bg-indigo-100 dark:bg-indigo-950/50 border-0 text-indigo-800 dark:text-indigo-200 text-[9px] px-1.5 py-0 font-bold"
                                         />
                                       </td>
-                                      <td className="p-3">
+                                      <td className="p-3 min-w-[15rem]">
                                         <RequirementSkillChips
                                           skills={primarySkills}
                                           emptyLabel="No primary skills"
@@ -6123,14 +6155,14 @@ export default function AdminDashboard() {
                                           chipClassName="bg-secondary border-0 text-muted-foreground text-[9px] px-1.5 py-0 font-bold"
                                         />
                                       </td>
-                                      <td className="p-3">
+                                      <td className="p-3 min-w-[16rem]">
                                         {editingJdId === j.id ? (
                                           <div className="flex items-center gap-1">
                                             <input
                                               type="text"
                                               value={editingRmEmail}
                                               onChange={(e) => setEditingRmEmail(e.target.value)}
-                                              className="w-40 p-1 text-[10px] font-bold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
+                                              className="w-56 p-1 text-[10px] font-bold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
                                               placeholder="RM Email"
                                               autoFocus
                                             />
@@ -6151,7 +6183,7 @@ export default function AdminDashboard() {
                                           </div>
                                         ) : (
                                           <div className="flex items-center gap-1 group">
-                                            <span className="max-w-[160px] break-all font-semibold text-slate-700 dark:text-slate-200" title={creatorEmail}>
+                                            <span className="whitespace-nowrap font-semibold text-slate-700 dark:text-slate-200" title={creatorEmail}>
                                               {creatorEmail}
                                             </span>
                                             <button
@@ -6523,7 +6555,7 @@ export default function AdminDashboard() {
                       {/* Employee Table */}
                       <div className="border border-border rounded-2xl overflow-hidden">
                         <div className="overflow-auto max-h-[500px]">
-                          <table className="w-full text-left border-collapse text-xs">
+                          <table className="admin-grid-table corp-pool-table min-w-[1100px] w-full text-left border-collapse">
                             <thead>
                               <tr className="bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-border text-slate-500 font-extrabold uppercase tracking-wider text-[10px] sticky top-0 z-10">
                                 <th className="p-3 w-10 text-center">
@@ -6567,7 +6599,14 @@ export default function AdminDashboard() {
                                   {group.employees.map(emp => {
                                 const skillChips = personSkillChips(emp);
                                 return (
-                                  <tr key={emp.employee_id} className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors duration-150 ${
+                                  <tr
+                                    data-row-shade={corpPoolRowStripeById.get(emp.employee_id)}
+                                    data-row-highlighted={
+                                      selectedPoolIdSet.has(emp.employee_id) ||
+                                      Boolean(emp.shortlisted) ||
+                                      selectedEmployeeIds.includes(emp.employee_id)
+                                    }
+                                    className={`admin-data-row hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors duration-150 ${
                                     selectedPoolIdSet.has(emp.employee_id)
                                       ? "bg-sky-50/70 dark:bg-sky-950/25"
                                       : emp.shortlisted
@@ -7267,7 +7306,7 @@ export default function AdminDashboard() {
 
                     <div className="border border-border rounded-2xl overflow-hidden">
                       <div className="overflow-auto max-h-[600px]">
-                        <table className="w-full text-left border-collapse text-xs min-w-[1430px]">
+                        <table className="admin-grid-table employee-portal-table w-full text-left border-collapse min-w-[1430px]">
                           <thead>
                             <tr className="bg-slate-100/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-border text-slate-500 font-extrabold uppercase tracking-wider text-[10px] sticky top-0 z-10">
                               <th className="p-3 w-10 text-center">
@@ -7302,7 +7341,7 @@ export default function AdminDashboard() {
                           </thead>
                           <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-800/50">
                             {filteredPortalEmployees
-                              .map(account => {
+                              .map((account, accountIndex) => {
                                 const isExpanded = !!expandedEmployees[account.employee_id];
                                 const statusLabel = getPortalTestStatusLabel(account.test_status);
                                 const videoTest = portalVideoTest(account);
@@ -7310,6 +7349,8 @@ export default function AdminDashboard() {
                                 return (
                                   <React.Fragment key={account.employee_id}>
                                     <tr
+                                      data-row-shade={accountIndex % 2 === 0 ? "odd" : "even"}
+                                      data-row-highlighted={selectedPortalEmployeeIds.includes(account.employee_id)}
                                       className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors duration-150 ${
                                         selectedPortalEmployeeIds.includes(account.employee_id)
                                           ? "bg-indigo-50/20 dark:bg-indigo-950/20"

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
+import { Open_Sans } from "next/font/google";
 import "./globals.css";
 import "plyr/dist/plyr.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -11,6 +12,13 @@ const jakarta = Plus_Jakarta_Sans({
   variable: "--font-jakarta",
   display: "swap",
   weight: ["400", "500", "600", "700", "800"],
+});
+
+const openSans = Open_Sans({
+  subsets: ["latin"],
+  variable: "--font-open-sans",
+  display: "swap",
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -25,7 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="aqua" suppressHydrationWarning>
       <head />
       <body
-        className={`${jakarta.variable} ${jakarta.className} bg-background text-foreground antialiased transition-colors duration-300 min-h-screen`}
+        className={`${jakarta.variable} ${jakarta.className} ${openSans.variable} bg-background text-foreground antialiased transition-colors duration-300 min-h-screen`}
       >
         <Script id="theme-script" strategy="beforeInteractive">
           {`

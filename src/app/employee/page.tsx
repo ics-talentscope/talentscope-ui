@@ -25,7 +25,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PasswordInput } from "@/components/ui/password-input";
-import ThemeToggle from "@/components/ThemeToggle";
 
 
 const initialState = {
@@ -676,7 +675,6 @@ export default function EmployeeLoginPage() {
               </div>
             )}
           </div>
-          <ThemeToggle />
         </div>
       </header>
 

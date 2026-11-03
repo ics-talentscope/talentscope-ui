@@ -10,9 +10,9 @@ export default function EmployeeLayout({ children }: { children: React.ReactNode
     pathname.startsWith("/employee/set-password") ||
     pathname.startsWith("/employee/sso-complete");
 
-  if (isPublicRoute) {
-    return <>{children}</>;
-  }
-
-  return <EmployeeAuthGate>{children}</EmployeeAuthGate>;
+  return (
+    <div className="employee-portal-green min-h-screen">
+      {isPublicRoute ? children : <EmployeeAuthGate>{children}</EmployeeAuthGate>}
+    </div>
+  );
 }

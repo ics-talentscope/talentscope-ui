@@ -7,7 +7,6 @@ import { ShieldCheck, CheckCircle2, AlertCircle, Loader2, Sparkles, ArrowLeft } 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import ThemeToggle from "@/components/ThemeToggle";
 
 const rules = [
   { label: "Minimum 8 characters",        test: (value: string) => value.length >= 8 },
@@ -97,17 +96,12 @@ function InnerPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#f8fafc] via-[#f0f4ff] to-[#e0e7ff] dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 flex items-center justify-center px-4 py-6 relative overflow-hidden transition-colors duration-300">
+    <div className="min-h-screen bg-gradient-to-br from-[#f0fdf4] via-[#ecfdf5] to-[#d1fae5] flex items-center justify-center px-4 py-6 relative overflow-hidden transition-colors duration-300">
       {/* Background decorative elements */}
       <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-10 left-10 w-72 h-72 bg-indigo-600/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-10 right-10 w-96 h-96 bg-violet-600/10 rounded-full blur-3xl" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-700/5 rounded-full blur-[120px]" />
-      </div>
-
-      {/* Theme Toggler */}
-      <div className="absolute top-4 right-4 z-20">
-        <ThemeToggle />
+        <div className="absolute top-10 left-10 w-72 h-72 bg-emerald-600/10 rounded-full blur-3xl" />
+        <div className="absolute bottom-10 right-10 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-emerald-700/5 rounded-full blur-[120px]" />
       </div>
 
       {/* ── Go Back link ────────────────────────────────────────────── */}
@@ -116,7 +110,7 @@ function InnerPage() {
           <Button
             variant="ghost"
             size="sm"
-            className="group flex items-center gap-2 text-muted-foreground hover:text-slate-700 dark:hover:text-white hover:bg-indigo-50/50 dark:hover:bg-white/10 rounded-xl px-3.5 py-2 transition-all duration-200"
+            className="group flex items-center gap-2 text-muted-foreground hover:text-slate-700 hover:bg-emerald-50 rounded-xl px-3.5 py-2 transition-all duration-200"
           >
             <ArrowLeft className="w-3.5 h-3.5 transition-transform group-hover:-translate-x-1" />
             <span className="font-semibold text-xs">Back to Login</span>
