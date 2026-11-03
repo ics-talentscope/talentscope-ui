@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, RotateCcw, AlertTriangle, Sparkles, Loader2, XCircle } from "lucide-react";
 import { motion } from "framer-motion";
@@ -33,8 +34,11 @@ function ResultsView(props: {
   isArchivedReview?: boolean;
   hideVideoStatus?: boolean;
   retakeLabel?: string;
+  retakePending?: boolean;
+  retakeError?: string | null;
 }) {
   const { correct = 0, total = 0, accuracy_pct = 0, ai_analysis, topic_title } = props.result;
+  const [reviewOpen, setReviewOpen] = useState(false);
   const videoUploadState = props.videoUploadState ?? "done";
   const hideVideoStatus = props.hideVideoStatus === true || props.isArchivedReview === true;
   const reviewItems = props.reviewItems ?? [];
@@ -98,6 +102,12 @@ function ResultsView(props: {
       )}
 
       {reviewItems.length > 0 && (
+        <Button type="button" variant="outline" className="w-full" onClick={() => setReviewOpen((open) => !open)}>
+          {reviewOpen ? "Hide review" : "Review answered questions"}
+        </Button>
+      )}
+
+      {reviewOpen && reviewItems.length > 0 && (
         <div className="space-y-4">
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-primary">Question review</p>
@@ -156,9 +166,14 @@ function ResultsView(props: {
       )}
 
       {/* ── Actions ── */}
+      {props.retakeError && (
+        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+          {props.retakeError}
+        </p>
+      )}
       <div className="flex gap-3">
-        <Button onClick={props.onRetake} className="flex-1 gap-2 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all font-semibold">
-          <RotateCcw className="w-4 h-4" /> {props.retakeLabel ?? (props.isArchivedReview ? "Start new attempt" : "Retake")}
+        <Button onClick={props.onRetake} disabled={props.retakePending} className="flex-1 gap-2 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all font-semibold">
+          <RotateCcw className="w-4 h-4" /> {props.retakePending ? "Loading attempt…" : props.retakeLabel ?? (props.isArchivedReview ? "Start new attempt" : "Retake")}
         </Button>
         <Button
           variant="outline"

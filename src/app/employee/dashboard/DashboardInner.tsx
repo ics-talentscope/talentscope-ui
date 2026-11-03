@@ -384,7 +384,7 @@ export function DashboardInner() {
             <StatCard label="Tests Taken" value={displayAnalytics.total_tests_taken}   icon={Clock}       />
             <StatCard label="Avg Score"   value={`${displayAnalytics.average_score}%`}  icon={Target}      />
             <StatCard label="Readiness"   value={`${ars}%`}                      icon={Sparkles}      />
-            <StatCard label="XP Points"   value={displayAnalytics.xp_points || displayAnalytics.ai_readiness_score}   icon={Award}       />
+            <StatCard label="XP Points"   value={displayAnalytics.xp_points ?? 0}   icon={Award}       />
             <SubjectCard label="Strongest Subject" sub={strongest?.subject_title ?? "—"} />
             <SubjectCard label="Weakest Subject"   sub={weakest   ?.subject_title ?? "—"} highlight />
           </section>
