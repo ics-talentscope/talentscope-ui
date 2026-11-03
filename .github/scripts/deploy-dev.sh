@@ -22,6 +22,9 @@ DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/talentscope-dev}"
 APP_DIR="${APP_DIR:-$DEPLOY_ROOT/ui}"
 ENV_FILE="${ENV_FILE:-$DEPLOY_ROOT/.env.local}"
 COMPOSE_FILE="${COMPOSE_FILE:-$DEPLOY_ROOT/docker-compose.azure.yml}"
+UI_COMPOSE_FILE="$SRC/compose.ui.yml"
+UI_PORT=3001
+export UI_PORT
 SERVICE=ui
 IMAGE=talentscope-dev-ui:latest
 ROLLBACK_IMAGE=talentscope-dev-ui:rollback
@@ -44,7 +47,7 @@ fi
   exit 1
 }
 
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f "$UI_COMPOSE_FILE")
 cd "$DEPLOY_ROOT"
 "${COMPOSE[@]}" config --services | grep -Fxq "$SERVICE" || {
   echo "Compose service '$SERVICE' was not found in $COMPOSE_FILE." >&2
@@ -62,6 +65,8 @@ rsync -a --delete --checksum \
   --exclude='/.env*' --exclude='/.git/' --exclude='/.github/' \
   --exclude='/node_modules/' --exclude='/.next/' \
   "$SRC/" "$APP_DIR/"
+UI_COMPOSE_FILE="$APP_DIR/compose.ui.yml"
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -f "$UI_COMPOSE_FILE")
 
 PREVIOUS_CONTAINER="$("${COMPOSE[@]}" ps -q "$SERVICE" || true)"
 PREVIOUS_IMAGE_REF=""
@@ -110,6 +115,15 @@ rollback() {
 
 if ! "${COMPOSE[@]}" up -d --no-deps --force-recreate --no-build "$SERVICE"; then
   echo "UI container recreation failed." >&2
+  if ! rollback; then
+    echo "Automatic UI rollback failed; manual intervention is required." >&2
+  fi
+  exit 1
+fi
+
+PUBLISHED_PORT="$("${COMPOSE[@]}" port "$SERVICE" 3000)" || PUBLISHED_PORT=""
+if [[ "$PUBLISHED_PORT" != "127.0.0.1:$UI_PORT" ]]; then
+  echo "Development UI is published on '$PUBLISHED_PORT', expected 127.0.0.1:$UI_PORT." >&2
   if ! rollback; then
     echo "Automatic UI rollback failed; manual intervention is required." >&2
   fi

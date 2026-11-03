@@ -419,6 +419,7 @@ export default function CandidatePortal() {
   
   // Speech & Audio Analysis references
   const recognitionRef = useRef<any>(null);
+  const ignoreSpeechResultsRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -1634,13 +1635,14 @@ export default function CandidatePortal() {
     recognition.lang = 'en-US';
 
     recognition.onstart = () => {
+      ignoreSpeechResultsRef.current = false;
       setIsMicListening(true);
       setRecognitionError(null);
     };
 
     recognition.onresult = (event: any) => {
       // If we are on a coding question, ignore all live transcription to avoid overwriting code
-      if (isCodingQuestionRef.current) return;
+      if (isCodingQuestionRef.current || ignoreSpeechResultsRef.current) return;
 
       let fullTranscript = '';
       for (let i = 0; i < event.results.length; ++i) {
@@ -1677,6 +1679,17 @@ export default function CandidatePortal() {
     };
 
     recognitionRef.current = recognition;
+  };
+
+  const clearAnswer = () => {
+    setAnswer('');
+    if (!isMicListeningRef.current || !recognitionRef.current) return;
+    ignoreSpeechResultsRef.current = true;
+    try {
+      recognitionRef.current.abort();
+    } catch (err) {
+      console.debug("Could not restart speech recognition after clearing the transcript:", err);
+    }
   };
 
   const startListening = (force = false) => {
@@ -3667,7 +3680,7 @@ export default function CandidatePortal() {
 
                         <Button
                           variant="outline"
-                          onClick={() => setAnswer('')}
+                          onClick={clearAnswer}
                           className="rounded-2xl border border-border text-muted-foreground hover:bg-slate-50 dark:hover:bg-slate-850 h-10 px-3 font-bold gap-1 text-xs"
                           disabled={!answer || showStartConfirm}
                         >
