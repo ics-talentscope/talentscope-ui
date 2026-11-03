@@ -3673,7 +3673,7 @@ export default function AdminDashboard() {
 
   const handleResetEmailSessionClick = () => {
     const email = resetEmailInput.trim().toLowerCase();
-    if (!email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setActionError("Please enter a valid candidate email address to reset.");
       return;
     }
@@ -3695,8 +3695,8 @@ export default function AdminDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, adminEmail }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to reset session");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.message || "Failed to reset session");
 
       setActionSuccess(`Session for candidate ${email} has been reset and reactivated.`);
       setTimeout(() => setActionSuccess(null), 5000);

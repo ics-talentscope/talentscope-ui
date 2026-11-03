@@ -109,9 +109,26 @@ export default function EmployeeLoginPage() {
   const [modalSubmitting, setModalSubmitting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [ssoStatus, setSsoStatus] = useState<"loading" | "enabled" | "disabled" | "error">("loading");
   const [welcomeColorIndex, setWelcomeColorIndex] = useState(0);
   const [showMotivationalQuote, setShowMotivationalQuote] = useState(false);
   const [motivationalQuoteIndex, setMotivationalQuoteIndex] = useState(-1);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/employee/auth/saml/status", { cache: "no-store" })
+      .then(async (response) => {
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Could not check sign-in settings.");
+        if (!cancelled) setSsoStatus(status.enabled === true ? "enabled" : "disabled");
+      })
+      .catch(() => {
+        if (!cancelled) setSsoStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!showWelcome) return;
@@ -165,7 +182,7 @@ export default function EmployeeLoginPage() {
     syncRouteState();
     window.addEventListener("popstate", syncRouteState);
     return () => window.removeEventListener("popstate", syncRouteState);
-  }, []);
+  }, [ssoStatus]);
 
   const openPasswordSignIn = () => {
     setError("");
@@ -212,8 +229,9 @@ export default function EmployeeLoginPage() {
       }
       window.localStorage.setItem("employee_token", firstTimeModalData.token);
       router.push("/employee/dashboard");
-    } catch (err: any) {
-      setModalError(err.message || "An unexpected error occurred.");
+    } catch (err) {
+      console.error("Could not confirm the employee's existing password:", err);
+      setModalError("Could not confirm your password because the sign-in service could not be reached. Check your connection and retry.");
     } finally {
       setModalSubmitting(false);
     }
@@ -254,8 +272,9 @@ export default function EmployeeLoginPage() {
       }
       window.localStorage.setItem("employee_token", firstTimeModalData.token);
       router.push("/employee/dashboard");
-    } catch (err: any) {
-      setModalError(err.message || "An unexpected error occurred.");
+    } catch (err) {
+      console.error("Could not update the employee password:", err);
+      setModalError("Password update could not reach the sign-in service. Check your connection and retry.");
     } finally {
       setModalSubmitting(false);
     }
@@ -342,9 +361,9 @@ export default function EmployeeLoginPage() {
         return;
       }
 
-      setError("Unable to authenticate. Please try again.");
-    } catch (err: any) {
-      setError(err?.message || "Unexpected error during login.");
+      setError("Login response did not include a valid employee session. Retry; contact support if it continues.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Employee sign-in could not be completed. Retry; contact support if it continues.");
     } finally {
       setLoading(false);
     }
@@ -414,8 +433,9 @@ export default function EmployeeLoginPage() {
       setResetConfirmPassword("");
       setResetOtp("");
       setResetOtpSent(false);
-    } catch (err: any) {
-      setError(err?.message || "An unexpected error occurred.");
+    } catch (err) {
+      console.error("Could not complete the employee password reset:", err);
+      setError("Password reset could not reach the sign-in service. Check your connection and retry.");
     } finally {
       setLoading(false);
     }
@@ -762,7 +782,9 @@ export default function EmployeeLoginPage() {
               <span className="mt-1 block text-primary">sign in</span>
             </h2>
             <p className="mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-              Sign in with Microsoft, or use your Employee ID and password.
+              {ssoStatus === "enabled"
+                ? "Sign in with Microsoft and your organization's MFA policy, or use your Employee ID and password."
+                : "Sign in with Microsoft or use your Employee ID and password."}
             </p>
           </div>
 
@@ -770,6 +792,11 @@ export default function EmployeeLoginPage() {
             <div className="mb-3 w-full max-w-[360px] rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-500 flex items-center gap-2">
               <span className="text-sm leading-none">⚠</span>
               <span className="font-medium">{error}</span>
+            </div>
+          ) : null}
+          {ssoStatus === "error" && !error ? (
+            <div role="status" className="mb-3 w-full max-w-[360px] rounded-xl bg-amber-500/10 border border-amber-500/25 px-4 py-2.5 text-xs text-amber-700">
+          Microsoft sign-in settings could not be checked. You can still use employee ID and password.
             </div>
           ) : null}
 
@@ -797,27 +824,27 @@ export default function EmployeeLoginPage() {
               <ArrowUpRight className="h-5 w-5 shrink-0 text-[#a16c80] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             </motion.button>
 
-            <motion.button
-              type="button"
-              onClick={openPasswordSignIn}
-              animate={prefersReducedMotion ? undefined : { y: [0, -3, 0] }}
-              transition={prefersReducedMotion ? undefined : { duration: 4.2, repeat: Infinity, ease: "easeInOut", delay: 0.65 }}
-              whileHover={prefersReducedMotion ? undefined : { y: -5, scale: 1.015 }}
-              whileTap={prefersReducedMotion ? undefined : { scale: 0.99 }}
-              className="group flex min-h-[72px] w-full items-center gap-3 rounded-2xl border border-[#d9c9ef] bg-gradient-to-br from-[#fbf8ff] via-[#f0e8fb] to-[#dfd1f2] px-3.5 py-3 text-left text-[#49395d] shadow-[0_16px_34px_-16px_rgba(116,83,157,0.34)] transition-colors duration-200 hover:border-[#ccb9e8] hover:from-[#fdfbff] hover:to-[#d8c8ed] hover:shadow-[0_22px_40px_-16px_rgba(116,83,157,0.44)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#a886ce]/30 sm:px-4"
-            >
-              <motion.span
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white text-[#8062a4] shadow-[0_8px_16px_-6px_rgba(72,49,102,0.28)] ring-1 ring-[#ded3ec]"
-                animate={prefersReducedMotion ? undefined : { y: [0, -4, 0] }}
-                transition={prefersReducedMotion ? undefined : { duration: 3.2, repeat: Infinity, ease: "easeInOut", delay: 0.45 }}
+              <motion.button
+                type="button"
+                onClick={openPasswordSignIn}
+                animate={prefersReducedMotion ? undefined : { y: [0, -3, 0] }}
+                transition={prefersReducedMotion ? undefined : { duration: 4.2, repeat: Infinity, ease: "easeInOut", delay: 0.65 }}
+                whileHover={prefersReducedMotion ? undefined : { y: -5, scale: 1.015 }}
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.99 }}
+                className="group flex min-h-[72px] w-full items-center gap-3 rounded-2xl border border-[#d9c9ef] bg-gradient-to-br from-[#fbf8ff] via-[#f0e8fb] to-[#dfd1f2] px-3.5 py-3 text-left text-[#49395d] shadow-[0_16px_34px_-16px_rgba(116,83,157,0.34)] transition-colors duration-200 hover:border-[#ccb9e8] hover:from-[#fdfbff] hover:to-[#d8c8ed] hover:shadow-[0_22px_40px_-16px_rgba(116,83,157,0.44)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#a886ce]/30 sm:px-4"
               >
-                <LockKeyhole className="h-5 w-5" />
-              </motion.span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-base font-bold">Employee ID and password</span>
-                <span className="mt-1 block text-xs text-[#716382]">Sign in with your Employee ID and password</span>
-              </span>
-              <ArrowRight className="h-5 w-5 shrink-0 text-[#8062a4] transition-transform group-hover:translate-x-1" />
+                <motion.span
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white text-[#8062a4] shadow-[0_8px_16px_-6px_rgba(72,49,102,0.28)] ring-1 ring-[#ded3ec]"
+                  animate={prefersReducedMotion ? undefined : { y: [0, -4, 0] }}
+                  transition={prefersReducedMotion ? undefined : { duration: 3.2, repeat: Infinity, ease: "easeInOut", delay: 0.45 }}
+                >
+                  <LockKeyhole className="h-5 w-5" />
+                </motion.span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-bold">Employee ID and password</span>
+                  <span className="mt-1 block text-xs text-[#716382]">Sign in with your Employee ID and password</span>
+                </span>
+                <ArrowRight className="h-5 w-5 shrink-0 text-[#8062a4] transition-transform group-hover:translate-x-1" />
             </motion.button>
           </div>
 
