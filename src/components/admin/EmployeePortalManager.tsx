@@ -26,6 +26,8 @@ export function EmployeePortalManager({ onClose, fetcher }: { onClose: () => voi
   const [email, setEmail] = useState("");
   const [designation, setDesignation] = useState("");
   const [product, setProduct] = useState("");
+  const [questionType, setQuestionType] = useState<"ai" | "bank">("ai");
+  const [bulkQuestionType, setBulkQuestionType] = useState<"ai" | "bank">("ai");
   const [rosterFile, setRosterFile] = useState<File | null>(null);
   const [bankFile, setBankFile] = useState<File | null>(null);
   const [bankProduct, setBankProduct] = useState("");
@@ -60,20 +62,29 @@ export function EmployeePortalManager({ onClose, fetcher }: { onClose: () => voi
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ employeeId, name, email, designation, product }),
+          body: JSON.stringify({
+            employeeId,
+            name,
+            email,
+            designation,
+            product: questionType === "bank" ? product : "",
+            questionType,
+          }),
         },
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Could not save this employee.");
-      setNotice(
-        `${data.created ? "Created" : "Updated"} ${data.employeeId}; ${data.questionCount} questions assigned for ${data.product}.` +
-          (data.firstLoginPassword ? ` Initial password: Employee ID (${data.firstLoginPassword}).` : ""),
-      );
+      const assignmentNotice = data.questionSource === "ai"
+        ? "AI questionnaire enabled; the employee can choose a topic and difficulty."
+        : `${data.questionCount} questions assigned for ${data.product}.`;
+      setNotice(`${data.created ? "Created" : "Updated"} ${data.employeeId}; ${assignmentNotice}` +
+        (data.firstLoginPassword ? ` Initial password: Employee ID (${data.firstLoginPassword}).` : ""));
       setEmployeeId("");
       setName("");
       setEmail("");
       setDesignation("");
       setProduct("");
+      setQuestionType("ai");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save this employee.");
@@ -93,6 +104,7 @@ export function EmployeePortalManager({ onClose, fetcher }: { onClose: () => voi
     try {
       const form = new FormData();
       form.append("file", rosterFile);
+      form.append("question_type", bulkQuestionType);
       const response = await fetcher("/api/admin/employee-portal/users/bulk", { method: "POST", body: form });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Could not upload this employee roster.");
@@ -187,14 +199,30 @@ export function EmployeePortalManager({ onClose, fetcher }: { onClose: () => voi
               <input value={designation} onChange={(event) => setDesignation(event.target.value)} className={inputClass} placeholder="Role / designation" />
             </div>
             <label className="block text-[11px] font-bold text-muted-foreground">
-              Product
-              <select required value={product} onChange={(event) => setProduct(event.target.value)} className={`${inputClass} mt-1`}>
-                <option value="">Select a configured product</option>
+              Question source
+              <select value={questionType} onChange={(event) => setQuestionType(event.target.value as "ai" | "bank")} className={`${inputClass} mt-1`}>
+                <option value="ai">AI Questionnaire</option>
+                <option value="bank">Product Question Bank</option>
+              </select>
+            </label>
+            <label className="block text-[11px] font-bold text-muted-foreground">
+              Product {questionType === "ai" ? "(optional for AI questionnaire)" : ""}
+              <select
+                value={product}
+                onChange={(event) => setProduct(event.target.value)}
+                disabled={questionType !== "bank"}
+                required={questionType === "bank"}
+                className={`${inputClass} mt-1 ${questionType !== "bank" ? "cursor-not-allowed opacity-70" : ""}`}
+              >
+                <option value="">{questionType === "bank" ? "Select a configured product" : "AI questionnaire default"}</option>
                 {products.map((item) => <option key={item.product} value={item.product}>{item.product}</option>)}
               </select>
             </label>
+            {questionType === "ai" && <p className="text-[10px] text-muted-foreground">
+              Employees choose a learning topic; each topic is labeled Basic, Intermediate, or High difficulty.
+            </p>}
             <div className="flex gap-2">
-              <Button type="submit" disabled={busy !== null || products.length === 0} className="h-9 flex-1 gap-2 bg-primary text-xs font-bold text-white">
+              <Button type="submit" disabled={busy !== null || (questionType === "bank" && products.length === 0)} className="h-9 flex-1 gap-2 bg-primary text-xs font-bold text-white">
                 {busy === "user" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
                 Save employee and assign questions
               </Button>
@@ -204,8 +232,15 @@ export function EmployeePortalManager({ onClose, fetcher }: { onClose: () => voi
           <form onSubmit={uploadRoster} className="space-y-3 rounded-2xl border border-border p-4">
             <h3 className="text-sm font-bold text-foreground">Bulk upload employees</h3>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Upload CSV or Excel with columns Emp ID, Name, Email, Product, and optional Role. Existing employee passwords are preserved.
+              Choose a question source for this upload. AI Questionnaire does not require Product; bank mode requires a configured Product. Existing employee passwords are preserved.
             </p>
+            <label className="block text-[11px] font-bold text-muted-foreground">
+              Question source for this roster
+              <select value={bulkQuestionType} onChange={(event) => setBulkQuestionType(event.target.value as "ai" | "bank")} className={`${inputClass} mt-1`}>
+                <option value="ai">AI Questionnaire</option>
+                <option value="bank">Product Question Bank</option>
+              </select>
+            </label>
             <input required type="file" accept=".xlsx,.xlsm,.csv" onChange={(event) => setRosterFile(event.target.files?.[0] || null)} className="block w-full text-xs text-muted-foreground" />
             <Button type="submit" disabled={!rosterFile || busy !== null} variant="outline" className="h-9 w-full gap-2 text-xs font-bold">
               {busy === "bulk" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}

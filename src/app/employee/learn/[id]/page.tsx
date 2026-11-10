@@ -43,6 +43,13 @@ const diffColors: Record<DifficultyLevel, string> = {
   expert:      "bg-red-100    text-red-700    border-red-200",
 };
 
+const diffLabels: Record<DifficultyLevel, string> = {
+  beginner: "Basic",
+  intermediate: "Intermediate",
+  advanced: "High",
+  expert: "High",
+};
+
 // ---------------------------------------------------------------------------
 // Hook: fetch a single subject with its full module + topic tree
 // ---------------------------------------------------------------------------
@@ -227,7 +234,7 @@ export default function SubjectDetailPage() {
                       <h3 className="text-sm font-semibold text-foreground leading-snug">{topic.title}</h3>
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <Badge variant="outline" className={`text-[10px] border font-semibold ${diffColors[topic.difficulty]}`}>
-                          {topic.difficulty}
+                          {diffLabels[topic.difficulty]}
                         </Badge>
                         <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground border border-border font-medium">
                           <Clock className="w-2.5 h-2.5" /> {topic.estimated_minutes} min
