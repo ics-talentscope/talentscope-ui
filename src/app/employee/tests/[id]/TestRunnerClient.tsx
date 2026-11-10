@@ -35,17 +35,18 @@ function buildReviewItems(
   const byQuestionId = new Map((attempts ?? []).map((a) => [a.question_id, a]));
   return [...questions]
     .sort((a, b) => a.question_index - b.question_index)
-    .map((q, idx) => {
+    .flatMap((q, idx) => {
       const attempt = byQuestionId.get(q.id);
       const selected =
         attempt?.selected_option_index ??
         answersByIndex?.[q.question_index] ??
         answersByIndex?.[idx] ??
         null;
+      if (selected == null) return [];
       const isCorrect =
         attempt?.is_correct ??
-        (selected == null ? null : selected === q.correct_option_index);
-      return {
+        (q.correct_option_index == null ? null : selected === q.correct_option_index);
+      return [{
         question_index: q.question_index ?? idx,
         question_text: q.question_text,
         options: q.options ?? [],
@@ -53,7 +54,7 @@ function buildReviewItems(
         correct_option_index: q.correct_option_index ?? null,
         explanation: q.explanation,
         is_correct: isCorrect,
-      };
+      }];
     });
 }
 
@@ -76,6 +77,55 @@ function countdown(seconds: number): string {
 interface LoadedState {
   test: Test;
   questions: TestQuestion[];
+}
+
+async function fetchTestWithBuffering(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  bufferOnLoad: boolean,
+  setBufferStatus: (status: string | null) => void,
+  isCancelled: () => boolean,
+): Promise<Response | null> {
+  const retryDelays = bufferOnLoad ? [500, 1000, 1500, 2000, 3000, 4000] : [];
+  for (let attempt = 0; ; attempt += 1) {
+    if (isCancelled()) return null;
+    if (attempt > 0) {
+      setBufferStatus(`Waiting for your test to sync (${attempt}/${retryDelays.length})…`);
+      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1]));
+      if (isCancelled()) return null;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(input, { ...init, cache: "no-store" });
+    } catch (error) {
+      if (isCancelled()) return null;
+      if (attempt < retryDelays.length) continue;
+      setBufferStatus(null);
+      throw error;
+    }
+
+    if (isCancelled()) return null;
+    if (response.ok) {
+      setBufferStatus(null);
+      return response;
+    }
+
+    const body = await response.clone().text();
+    let message = "";
+    try {
+      message = JSON.parse(body).error ?? "";
+    } catch {
+      message = body;
+    }
+    const questionSyncPending =
+      response.status === 400 &&
+      message === "This assessment has no questions assigned yet. Please contact your administrator.";
+    const transientRead = [404, 500, 502, 503, 504].includes(response.status) || questionSyncPending;
+    if (transientRead && attempt < retryDelays.length) continue;
+    setBufferStatus(null);
+    return response;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +153,7 @@ function DifficultyBadge({ d }: { d: string }) {
 // CLIENT SUB-COMPONENT
 // =====================================================================
 
-export default function TestRunnerClient({ testId }: { testId: string }) {
+export default function TestRunnerClient({ testId, bufferOnLoad = false }: { testId: string; bufferOnLoad?: boolean }) {
   const router = useRouter();
 
   // ── state ──────────────────────────────────────────────────────
@@ -112,6 +162,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
 
   const [phase,       setPhase]       = useState<Phase>("loading");
   const [err,         setErr]         = useState<string | null>(null);
+  const [bufferStatus, setBufferStatus] = useState<string | null>(null);
   const [test,        setTest]        = useState<Test | null>(null);
   const [questions,   setQuestions]   = useState<TestQuestion[] | null>(null);
   const [currentIdx,  setCurrentIdx]  = useState(0);
@@ -123,6 +174,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   const [reviewItems, setReviewItems] = useState<ResultReviewItem[]>([]);
   const [isArchivedReview, setIsArchivedReview] = useState(false);
   const [videoUploadState, setVideoUploadState] = useState<VideoUploadState>("pending");
+  const [retakePending, setRetakePending] = useState(false);
+  const [retakeError, setRetakeError] = useState<string | null>(null);
 
   const savedRef     = useRef(false);
   const timerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -193,12 +246,15 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
     if (!token) return;
     let cancelled = false;
     (async () => {
+      const fetchWithBuffer = (input: RequestInfo | URL, init?: RequestInit) =>
+        fetchTestWithBuffering(input, init, bufferOnLoad, setBufferStatus, () => cancelled);
       try {
-        const r = await fetch(`/api/employee/tests/${testId}`, {
+        const r = await fetchWithBuffer(`/api/employee/tests/${testId}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
         });
+        if (!r || cancelled) return;
         if (!r.ok) {
           const errBody = await r.text();
           let message = "Failed to load test";
@@ -265,7 +321,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       cancelled = true;
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [testId, token]);
+  }, [testId, token, bufferOnLoad]);
 
   // ── auto-save progress every 10 s ─────────────────────────────
   useEffect(() => {
@@ -617,7 +673,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           accuracy_pct: res.accuracy ?? 0,
           topic_title: (test as any)?.topic_title ?? "",
         });
-        setReviewItems(buildReviewItems(questions, null, ans));
+        setReviewItems(buildReviewItems(res.questions, res.attempts));
         if (document.fullscreenElement) {
           document.exitFullscreen().catch(() => {});
         }
@@ -634,7 +690,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         ai_analysis: res.ai_analysis,
         topic_title: (test as any)?.topic_title ?? "",
       });
-      setReviewItems(buildReviewItems(questions, null, ans));
+      setReviewItems(buildReviewItems(res.questions, res.attempts));
       if (document.fullscreenElement) {
         document.exitFullscreen().catch(() => {});
       }
@@ -676,7 +732,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   if (phase === "loading") {
     return (
       <div className="py-16 mx-auto max-w-3xl">
-        <PageLoadingSkeleton label="Preparing your test" />
+        <PageLoadingSkeleton label={bufferStatus ? "Buffering your test" : "Preparing your test"} />
+        {bufferStatus && <p className="mt-4 text-center text-sm text-muted-foreground">{bufferStatus}</p>}
       </div>
     );
   }
@@ -723,11 +780,33 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         isArchivedReview={isArchivedReview}
         hideVideoStatus={isArchivedReview}
         retakeLabel={isArchivedReview ? "Start new attempt" : "Retake"}
-        onRetake={() => {
+        retakePending={retakePending}
+        retakeError={retakeError}
+        onRetake={async () => {
           if (isArchivedReview) {
-            window.location.href = "/employee/dashboard";
+            setRetakePending(true);
+            setRetakeError(null);
+            try {
+              const response = await fetch("/api/employee/assigned-test", {
+                headers: { Authorization: `Bearer ${token}` },
+                cache: "no-store",
+              });
+              const payload = await response.json().catch(() => null);
+              if (!response.ok) {
+                throw new Error(payload?.error || "Failed to load your assigned assessment.");
+              }
+              const activeTestId = payload?.active_test?.test_id;
+              if (typeof activeTestId !== "string" || !activeTestId) {
+                throw new Error("No active assessment is available to retake. Contact your administrator.");
+              }
+              router.push(`/employee/tests/${activeTestId}`);
+            } catch (error) {
+              setRetakeError(error instanceof Error ? error.message : "Unable to start a new attempt.");
+              setRetakePending(false);
+            }
             return;
           }
+          setRetakeError(null);
           setPhase("retake-confirm");
           setSubmitted(null);
           setAnswers({});

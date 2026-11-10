@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { BookOpen, Sparkles, ChevronRight, Clock, Zap, ArrowLeft, AlertCircle } from "lucide-react";
+import { BookOpen, Sparkles, ChevronRight, Clock, Zap, ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +41,13 @@ const diffColors: Record<DifficultyLevel, string> = {
   intermediate:"bg-blue-100    text-blue-700    border-blue-200",
   advanced:    "bg-amber-100   text-amber-700   border-amber-200",
   expert:      "bg-red-100    text-red-700    border-red-200",
+};
+
+const diffLabels: Record<DifficultyLevel, string> = {
+  beginner: "Basic",
+  intermediate: "Intermediate",
+  advanced: "High",
+  expert: "High",
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +98,7 @@ export default function SubjectDetailPage() {
 
   const [token, setToken] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [startingTopicId, setStartingTopicId] = useState<string | null>(null);
 
   useEffect(() => {
     setToken(window.localStorage.getItem("employee_token") ?? "");
@@ -99,7 +107,9 @@ export default function SubjectDetailPage() {
   const { detail, loading, err } = useSubjectDetail(subjectId, token);
 
   const handleTakeTest = (topicId: string) => async () => {
+    if (startingTopicId) return;
     setActionError(null);
+    setStartingTopicId(topicId);
     try {
       const r = await fetch(`/api/employee/learning/${topicId}/ai-quiz`, {
         method: "POST",
@@ -109,11 +119,15 @@ export default function SubjectDetailPage() {
         },
         body: JSON.stringify({}),
       });
-      if (!r.ok) throw new Error("Failed to start test.");
-      const { test_id } = await r.json();
-      router.push(`/employee/tests/${test_id}`);
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || "Failed to start test.");
+      const test_id = body.test_id;
+      if (typeof test_id !== "string" || !test_id) throw new Error("The test could not be prepared. Please try again.");
+      router.push(`/employee/tests/${test_id}?buffer=1`);
     } catch (e: any) {
       setActionError(e.message || "Failed to start test.");
+    } finally {
+      setStartingTopicId(null);
     }
   };
 
@@ -220,7 +234,7 @@ export default function SubjectDetailPage() {
                       <h3 className="text-sm font-semibold text-foreground leading-snug">{topic.title}</h3>
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <Badge variant="outline" className={`text-[10px] border font-semibold ${diffColors[topic.difficulty]}`}>
-                          {topic.difficulty}
+                          {diffLabels[topic.difficulty]}
                         </Badge>
                         <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground border border-border font-medium">
                           <Clock className="w-2.5 h-2.5" /> {topic.estimated_minutes} min
@@ -242,8 +256,13 @@ export default function SubjectDetailPage() {
                       size="sm"
                       className="w-full gap-1 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all"
                       onClick={handleTakeTest(topic.id)}
+                      disabled={startingTopicId !== null}
                     >
-                      <Sparkles className="w-3 h-3" /> Take test →
+                      {startingTopicId === topic.id ? (
+                        <><Loader2 className="w-3 h-3 animate-spin" /> Preparing test…</>
+                      ) : (
+                        <><Sparkles className="w-3 h-3" /> Take test →</>
+                      )}
                     </Button>
                   </div>
                 </Card>
