@@ -6,22 +6,47 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CenteredPageLoading, PageLoadingSkeleton, ScreeningTableSkeleton, Skeleton } from "@/components/ui/skeleton";
-import { 
-  Loader2, 
-  ArrowLeft, 
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  faClipboardList,
+  faUsers,
+  faUserCheck,
+  faUserXmark,
+  faGraduationCap,
+  faEnvelope,
+  faGear,
+  faPercent,
+  faRotateLeft,
+  faSliders,
+  faChartLine,
+  faHandshake,
+  faCircleUser,
+  faLink,
+  faIdBadge,
+  faBriefcase,
+  faBuilding,
+  faAward,
+  faUserTie,
+  faLocationDot,
+  faAddressCard,
+  faSitemap,
+} from "@fortawesome/free-solid-svg-icons";
+import {
+  Loader2,
+  ArrowLeft,
   ArrowRight,
-  FileText, 
-  ClipboardList, 
-  Eye, 
+  FileText,
+  ClipboardList,
+  Eye,
   Download,
   Play,
-  Sparkles, 
-  Upload, 
-  Trash2, 
-  CheckCircle2, 
-  XCircle, 
-  RefreshCcw, 
-  AlertCircle, 
+  Sparkles,
+  Upload,
+  Trash2,
+  CheckCircle2,
+  XCircle,
+  RefreshCcw,
+  AlertCircle,
   HelpCircle,
   Video,
   Mail,
@@ -38,6 +63,9 @@ import {
   KeyRound,
   Check,
   Percent,
+  UserCheck,
+  UserX,
+  GraduationCap,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { formatPortalTimestamp } from "@/lib/portal-format";
@@ -1256,7 +1284,30 @@ export default function AdminDashboard() {
   } | null>(null);
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<"employee" | "suitable" | "unsuitable" | "outbox" | "requirements" | "logs" | "employee-portal">("requirements");
+  const [activeTab, setActiveTab] = useState<
+    | "employee"
+    | "suitable"
+    | "unsuitable"
+    | "outbox"
+    | "requirements"
+    | "logs"
+    | "employee-portal"
+    | "ingestion"
+    | "percentage"
+    | "reset-candidate"
+    | "portal-config"
+    | "profile-name"
+    | "profile-employee-id"
+    | "profile-role"
+    | "profile-designation"
+    | "profile-experience"
+    | "profile-department"
+    | "profile-manager"
+    | "profile-location"
+    | "profile-contact"
+    | "profile-org-chart"
+    | null
+  >(null);
   const [allTestResults, setAllTestResults] = useState<any[]>([]);
   const [resourcePortalEmployees, setResourcePortalEmployees] = useState<any[]>([]);
   const [resettingTestId, setResettingTestId] = useState<string | null>(null);
@@ -1459,7 +1510,7 @@ export default function AdminDashboard() {
   }, [authenticated, adminEmail]);
 
   const tabAllowed = useCallback(
-    (tab: typeof activeTab) => {
+    (tab: NonNullable<typeof activeTab>) => {
       switch (tab) {
         case "requirements": return adminPermissions.requirements;
         case "employee": return adminPermissions.corpPool;
@@ -1467,16 +1518,59 @@ export default function AdminDashboard() {
         case "unsuitable": return adminPermissions.candidates;
         case "employee-portal": return adminPermissions.employeePortal;
         case "outbox": return adminPermissions.emailOutbox;
-        default: return true;
+        case "ingestion":
+        case "percentage":
+        case "reset-candidate": return adminPermissions.adminControls;
+        case "portal-config": return canManagePortalConfig;
+        case "logs": return adminPermissions.systemLogs && portalSettings.showSystemLogsViewer;
+        case "profile-name":
+        case "profile-employee-id":
+        case "profile-role":
+        case "profile-designation":
+        case "profile-experience":
+        case "profile-department":
+        case "profile-manager":
+        case "profile-location":
+        case "profile-contact":
+        case "profile-org-chart": return true;
       }
     },
-    [adminPermissions]
+    [adminPermissions, canManagePortalConfig, portalSettings.showSystemLogsViewer]
   );
-  const anyTabAllowed = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).some(tabAllowed);
+  const anyTabAllowed = (
+    [
+      "requirements",
+      "employee",
+      "suitable",
+      "unsuitable",
+      "employee-portal",
+      "outbox",
+      "ingestion",
+      "percentage",
+      "reset-candidate",
+      "portal-config",
+      "logs",
+    ] as const
+  ).some(tabAllowed);
 
   useEffect(() => {
+    if (activeTab === null) return;
     if (tabAllowed(activeTab)) return;
-    const first = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).find(tabAllowed);
+    const first = (
+      [
+        "requirements",
+        "employee",
+        "suitable",
+        "unsuitable",
+        "employee-portal",
+        "outbox",
+        "ingestion",
+        "percentage",
+        "reset-candidate",
+        "portal-config",
+        "logs",
+      ] as const
+    ).find(tabAllowed);
     if (first) setActiveTab(first);
   }, [tabAllowed, activeTab]);
 
@@ -5656,6 +5750,89 @@ export default function AdminDashboard() {
     ? scoredEmployees.reduce((best, current) => (current.score || 0) > (best.score || 0) ? current : best, scoredEmployees[0])
     : null;
 
+  const dashboardTabs = [
+    {
+      id: "requirements" as const,
+      label: "Requirements (BR / JD)",
+      icon: faClipboardList,
+      count: isDashboardBootstrapping || isJdLoading ? "…" : filteredJds.length,
+      allowed: adminPermissions.requirements,
+    },
+    {
+      id: "employee" as const,
+      label: "Corp Pool",
+      icon: faUsers,
+      count: isDashboardBootstrapping && employees.length === 0 ? "…" : employees.length,
+      allowed: adminPermissions.corpPool,
+    },
+    {
+      id: "suitable" as const,
+      label: "Suitable Candidates",
+      icon: faUserCheck,
+      count: isDashboardBootstrapping || loading ? "…" : suitableCandidates.length,
+      allowed: adminPermissions.candidates,
+    },
+    {
+      id: "unsuitable" as const,
+      label: "Non-Suitable Candidates",
+      icon: faUserXmark,
+      count: isDashboardBootstrapping || loading ? "…" : unsuitableCandidates.length,
+      allowed: adminPermissions.candidates,
+    },
+    {
+      id: "employee-portal" as const,
+      label: "Employee Portal",
+      icon: faGraduationCap,
+      count: isDashboardBootstrapping && resourcePortalEmployees.length === 0
+        ? "…"
+        : resourcePortalEmployees.length || Array.from(new Set(allTestResults.map((t) => t.employeeId))).length,
+      allowed: adminPermissions.employeePortal,
+    },
+    {
+      id: "outbox" as const,
+      label: "Email Outbox",
+      icon: faEnvelope,
+      count: isDashboardBootstrapping || isEmailsLoading ? "…" : emails.length,
+      allowed: adminPermissions.emailOutbox,
+    },
+    { id: "ingestion" as const, label: "Ingestion Pipeline", icon: faGear, allowed: adminPermissions.adminControls },
+    { id: "percentage" as const, label: "Percentage Matching", icon: faPercent, allowed: adminPermissions.adminControls },
+    { id: "logs" as const, label: "System Logs", icon: faChartLine, allowed: adminPermissions.systemLogs && portalSettings.showSystemLogsViewer },
+  ].filter((tab) => tab.allowed);
+
+  const popularAdminLinks = [
+    ...dashboardTabs.filter((tab) =>
+      tab.id === "ingestion" || tab.id === "percentage" || tab.id === "logs"
+    ),
+    { id: "profile-org-chart" as const, label: "Org Chart", icon: faSitemap },
+  ];
+
+  const adminProfileTabs = [
+    { id: "profile-name" as const, label: "Admin Name", value: "Not provided", icon: faCircleUser },
+    { id: "profile-employee-id" as const, label: "Employee ID", value: "Not provided", icon: faIdBadge },
+    { id: "profile-role" as const, label: "Role", value: isSuperAdmin ? "Super Admin" : "Admin", icon: faUserTie },
+    { id: "profile-designation" as const, label: "Designation", value: "Not provided", icon: faBriefcase },
+    { id: "profile-experience" as const, label: "Years of Experience", value: "Not provided", icon: faAward },
+    { id: "profile-department" as const, label: "Department", value: "Not provided", icon: faBuilding },
+    { id: "profile-manager" as const, label: "Reporting Manager", value: "Not provided", icon: faUserTie },
+    { id: "profile-location" as const, label: "Location", value: "Not provided", icon: faLocationDot },
+    { id: "profile-contact" as const, label: "Contact Information", value: adminEmail || "Not provided", icon: faAddressCard },
+    { id: "profile-org-chart" as const, label: "Org Chart", value: "Organization reporting view", icon: faSitemap },
+  ];
+
+  const isMainDataTab =
+    activeTab === "requirements" ||
+    activeTab === "employee" ||
+    activeTab === "suitable" ||
+    activeTab === "unsuitable" ||
+    activeTab === "employee-portal" ||
+    activeTab === "outbox";
+
+  const activeProfileTab = adminProfileTabs.find((item) => item.id === activeTab);
+  const activeDashboardTab = dashboardTabs.find((item) => item.id === activeTab);
+  const activePopularLink = popularAdminLinks.find((item) => item.id === activeTab);
+  const activeViewTitle = activeProfileTab?.label || activeDashboardTab?.label || activePopularLink?.label || "Admin Controls";
+
   const emailsToRender = emails.filter((email) => {
     if (!outboxSearch) return true;
     const term = outboxSearch.toLowerCase();
@@ -5684,31 +5861,29 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="min-h-screen app-canvas font-sans text-foreground transition-colors duration-300">
-      <nav className="app-nav py-3.5 px-6">
+    <div className="admin-dashboard-shell min-h-screen font-sans text-foreground transition-colors duration-300">
+      <nav className="admin-dashboard-nav app-nav px-5">
         <div className="max-w-full mx-auto relative flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="app-brand-mark">
-              <ClipboardList className="w-[18px] h-[18px]" />
+            <div className="admin-dashboard-brand-mark">
+              <ClipboardList className="w-5 h-5" />
             </div>
             <div className="leading-tight">
-              <p className="text-sm md:text-base font-bold tracking-tight text-foreground">
+              <p className="text-sm md:text-base font-bold tracking-tight text-foreground admin-dashboard-brand-name">
                 TalentScope
               </p>
-              <p className="text-[11px] text-muted-foreground font-medium hidden sm:block">
-                Requirements · Corp Pool · Portal
+              <p className="text-[11px] text-muted-foreground font-medium hidden sm:block admin-dashboard-brand-subtitle">
+                Talent screening & assessment
               </p>
             </div>
           </div>
-          {adminEmail && (
-            <div className="order-3 w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 text-center pointer-events-none px-2">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Signed in</p>
-              <p className="text-sm font-bold text-foreground truncate max-w-[min(100%,22rem)]" title={adminEmail}>
-                {adminEmail}
-              </p>
-            </div>
-          )}
-          <div className="flex items-center gap-2 md:gap-3 flex-wrap ml-auto">
+          <div className="admin-dashboard-actions flex items-center gap-2 md:gap-3 flex-wrap ml-auto">
+            {adminEmail && (
+              <div className="admin-dashboard-user min-w-0">
+                <FontAwesomeIcon icon={faCircleUser} aria-hidden="true" />
+                <span className="truncate" title={adminEmail}>{adminEmail}</span>
+              </div>
+            )}
             {canChangePassword && (
               <Button
                 variant="outline"
@@ -5736,7 +5911,9 @@ export default function AdminDashboard() {
               Monitor
             </Button>
             )}
-            <ThemeToggle />
+            <div className="admin-theme-toggle">
+              <ThemeToggle />
+            </div>
             <Link href="/">
               <Button variant="outline" size="sm" className="gap-1.5 md:gap-2 text-xs">
                 <ArrowLeft className="w-3.5 h-3.5" />
@@ -5762,17 +5939,83 @@ export default function AdminDashboard() {
         />
       )}
 
-      <main className="max-w-full mx-auto px-6 py-8 space-y-8">
-        
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="app-section-title flex items-center gap-2.5 mb-1.5">
-              <ClipboardList className="w-6 h-6 text-primary" /> Screening Dashboard
+      <main className="admin-dashboard-layout">
+        <aside className="admin-dashboard-sidebar">
+          <div className="admin-sidebar-role">
+            <FontAwesomeIcon icon={faHandshake} aria-hidden="true" />
+            <span>HR Partner</span>
+          </div>
+          <div className="admin-sidebar-profile">
+            <FontAwesomeIcon icon={faCircleUser} aria-hidden="true" />
+            <div className="min-w-0">
+              <span className="admin-sidebar-eyebrow">Signed in</span>
+              <span className="admin-sidebar-email" title={adminEmail || "Admin"}>
+                {adminEmail || "Admin"}
+              </span>
+            </div>
+          </div>
+          <section className="admin-sidebar-links" aria-label="Popular links">
+            <h2>
+              <FontAwesomeIcon icon={faLink} aria-hidden="true" />
+              Popular Links
+            </h2>
+            <div className="admin-sidebar-link-list admin-sidebar-admin-links">
+              {popularAdminLinks.map(({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-current={activeTab === id ? "page" : undefined}
+                  onClick={() => setActiveTab(id)}
+                  className={activeTab === id ? "is-active" : ""}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <h2 className="admin-sidebar-subheading">Admin Profile</h2>
+            <div className="admin-sidebar-link-list admin-sidebar-profile-links">
+              {adminProfileTabs.filter(({ id }) => id !== "profile-org-chart").map(({ id, label, icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-current={activeTab === id ? "page" : undefined}
+                  onClick={() => setActiveTab(id)}
+                  className={activeTab === id ? "is-active" : ""}
+                >
+                  <FontAwesomeIcon icon={icon} aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        </aside>
+
+        <section className="admin-dashboard-content">
+        <div className="admin-view-heading admin-dashboard-heading">
+          <div className="min-w-0">
+            <p className="admin-view-eyebrow">TalentScope / Administration</p>
+            <h1 className="admin-view-title">
+              {activeTab === null ? "Screening Dashboard" : activeViewTitle}
             </h1>
-            <p className="app-section-sub max-w-2xl">
-              Upload job descriptions, screen candidate CVs in bulk, override suitability categories, and reset test sessions.
+            <p className="admin-view-description">
+              {activeTab === null
+                ? "Choose a workspace from the launcher or Popular Links."
+                : activeProfileTab
+                  ? "Administrator profile information"
+                  : "Dashboard workspace"}
             </p>
           </div>
+          {activeTab !== null && (
+            <button
+              type="button"
+              className="admin-view-close"
+              onClick={() => setActiveTab(null)}
+              aria-label={`Close ${activeViewTitle}`}
+              title="Close current view"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* Global Action Toasts */}
@@ -5788,114 +6031,66 @@ export default function AdminDashboard() {
         )}
 
         {/* SCREENING RESULTS TAB CONTAINER */}
-        <Card className="border-border/70 shadow-card bg-card rounded-2xl overflow-hidden flex flex-col">
+        <Card
+          className="admin-launcher-surface border-border/70 shadow-card bg-card rounded-2xl overflow-hidden flex flex-col"
+          style={{ display: activeProfileTab ? "none" : undefined }}
+        >
               
               {/* Tab Header Navigation */}
-              <div className="flex w-full shrink-0 flex-nowrap overflow-x-auto scrollbar-none border-b border-border/70 bg-muted/40 px-1 sm:px-2">
-                {adminPermissions.requirements && (
-                <button
-                  onClick={() => setActiveTab("requirements")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "requirements"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <ClipboardList className="w-4 h-4 text-primary" />
-                  Requirements (BR / JD)
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "requirements" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping || isJdLoading ? "…" : filteredJds.length}
-                  </Badge>
-                </button>
-                )}
-                {adminPermissions.corpPool && (
-                <button
-                  onClick={() => setActiveTab("employee")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "employee"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Corp Pool
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "employee" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping && employees.length === 0 ? "…" : employees.length}
-                  </Badge>
-                </button>
-                )}
-                {adminPermissions.candidates && (
-                <button
-                  onClick={() => setActiveTab("suitable")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "suitable"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Suitable Candidates
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "suitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping || loading ? "…" : suitableCandidates.length}
-                  </Badge>
-                </button>
-                )}
-                {adminPermissions.candidates && (
-                <button
-                  onClick={() => setActiveTab("unsuitable")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "unsuitable"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Non-Suitable Candidates
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "unsuitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping || loading ? "…" : unsuitableCandidates.length}
-                  </Badge>
-                </button>
-                )}
-                {adminPermissions.employeePortal && (
-                <button
-                  onClick={() => setActiveTab("employee-portal")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "employee-portal"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Employee Portal
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "employee-portal" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping && resourcePortalEmployees.length === 0
-                      ? "…"
-                      : resourcePortalEmployees.length ||
-                        Array.from(new Set(allTestResults.map((t) => t.employeeId))).length}
-                  </Badge>
-                </button>
-                )}
-                {adminPermissions.emailOutbox && (
-                <button
-                  onClick={() => setActiveTab("outbox")}
-                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
-                    activeTab === "outbox"
-                      ? "border-primary text-foreground bg-card"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Mail className="w-4 h-4 text-primary" />
-                  Email Outbox
-                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "outbox" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                    {isDashboardBootstrapping || isEmailsLoading ? "…" : emails.length}
-                  </Badge>
-                </button>
-                )}
+              <div
+                role="tablist"
+                aria-label="Admin dashboard sections"
+                className="admin-launcher-grid grid w-full shrink-0 gap-2 p-2 sm:gap-2 sm:p-2"
+              >
+                {dashboardTabs.map(({ id, label, icon: Icon, count }) => {
+                  const isActive = activeTab === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      aria-controls="admin-dashboard-tab-content"
+                      onClick={() => setActiveTab(id)}
+                      className="admin-launcher-tile relative flex min-h-[104px] flex-col items-center justify-center gap-1.5 rounded-md border px-2 py-2 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    >
+                      <span className="admin-launcher-icon relative flex h-14 w-14 items-center justify-center">
+                        <FontAwesomeIcon
+                          icon={Icon}
+                          className="admin-launcher-glyph admin-launcher-glyph-shadow"
+                          aria-hidden="true"
+                        />
+                        <FontAwesomeIcon
+                          icon={Icon}
+                          className="admin-launcher-glyph admin-launcher-glyph-main"
+                          aria-hidden="true"
+                        />
+                        {count !== undefined && isActive && (
+                          <Badge className={`absolute -right-1.5 -top-1.5 min-w-5 justify-center border-0 px-1.5 py-0.5 text-[10px] ${
+                            isActive ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground shadow-sm"
+                          }`}>
+                            {count}
+                          </Badge>
+                        )}
+                      </span>
+                      <span className="max-w-full text-xs font-semibold leading-tight sm:text-sm">{label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Candidates List Container */}
-              <div className="p-6">
+              <div
+                id="admin-dashboard-tab-content"
+                role="tabpanel"
+                className="p-6"
+                style={{ display: isMainDataTab || !anyTabAllowed ? undefined : "none" }}
+              >
                 {!anyTabAllowed ? (
                   <div className="py-16 text-center text-sm text-muted-foreground">
                     Your account has not been given access to any dashboard tabs yet. Ask the main admin to tick the sections you need under Portal Config.
                   </div>
-                ) : isTabContentLoading ? (
+                ) : activeTab === null || !isMainDataTab ? null : isTabContentLoading ? (
                   <ScreeningTableSkeleton
                     variant={
                       activeTab === "requirements"
@@ -8571,8 +8766,56 @@ export default function AdminDashboard() {
           </div>
         </Card>
 
+        {activeProfileTab && (
+          <Card className="admin-profile-view">
+            <div className="admin-profile-view-heading">
+              <span className="admin-profile-view-icon">
+                <FontAwesomeIcon icon={activeProfileTab.icon} aria-hidden="true" />
+              </span>
+              <div>
+                <p className="admin-view-eyebrow">Admin Profile</p>
+                <h2>{activeProfileTab.label}</h2>
+              </div>
+            </div>
+            {activeProfileTab.id === "profile-org-chart" ? (
+              <div className="admin-org-chart" aria-label="Administrator organization chart">
+                <div className="admin-org-chart-node admin-org-chart-current">
+                  <FontAwesomeIcon icon={faCircleUser} aria-hidden="true" />
+                  <span>{adminEmail || "Signed-in administrator"}</span>
+                  <small>{isSuperAdmin ? "Super Admin" : "Admin"}</small>
+                </div>
+                <div className="admin-org-chart-connector" aria-hidden="true" />
+                <div className="admin-org-chart-branches">
+                  <div className="admin-org-chart-node">
+                    <FontAwesomeIcon icon={faUserTie} aria-hidden="true" />
+                    <span>Reporting Manager</span>
+                    <small>Not provided</small>
+                  </div>
+                  <div className="admin-org-chart-node">
+                    <FontAwesomeIcon icon={faUsers} aria-hidden="true" />
+                    <span>Team / Department</span>
+                    <small>Not provided</small>
+                  </div>
+                </div>
+                <p className="admin-org-chart-note">
+                  Reporting relationships are not available in the current administrator profile data.
+                </p>
+              </div>
+            ) : (
+              <dl className="admin-profile-detail">
+                <dt>{activeProfileTab.label}</dt>
+                <dd>{activeProfileTab.value}</dd>
+              </dl>
+            )}
+          </Card>
+        )}
+
         {/* Admin Controls Section */}
-        {adminPermissions.adminControls && (
+        {((adminPermissions.adminControls &&
+          (activeTab === "ingestion" ||
+            activeTab === "percentage" ||
+            activeTab === "reset-candidate")) ||
+          (canManagePortalConfig && activeTab === "portal-config")) && (
         <div className="mt-8 space-y-4">
           <div className="flex items-center gap-3 px-1">
             <div className="h-px flex-1 bg-gradient-to-r from-cyan-400 via-violet-500 to-fuchsia-400" />
@@ -8580,9 +8823,15 @@ export default function AdminDashboard() {
             <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400 via-violet-500 to-cyan-400" />
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-stretch">
+          <div className="grid grid-cols-1 gap-6 items-stretch">
           {/* INGESTION PIPELINE CONTROL CARD */}
-          <Card className="p-5 border-indigo-150 dark:border-slate-800 shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col h-full">
+          <Card
+            id="admin-control-ingestion"
+            role="tabpanel"
+            hidden={activeTab !== "ingestion"}
+            style={{ display: activeTab === "ingestion" ? undefined : "none" }}
+            className="p-5 border-indigo-150 dark:border-slate-800 shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col h-full"
+          >
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500" />
             
             <div className="flex justify-between items-start gap-3 pb-4 border-b border-border mb-4">
@@ -8852,9 +9101,25 @@ export default function AdminDashboard() {
             </div>
           </Card>
 
-          <div className="flex flex-col gap-4 h-full">
+          <div
+            className="flex flex-col gap-4 h-full"
+            style={{
+              display:
+                activeTab === "percentage" ||
+                activeTab === "reset-candidate" ||
+                activeTab === "portal-config"
+                  ? undefined
+                  : "none",
+            }}
+          >
           {/* PERCENTAGE MATCHING */}
-          <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden">
+          <Card
+            id="admin-control-percentage"
+            role="tabpanel"
+            hidden={activeTab !== "percentage"}
+            style={{ display: activeTab === "percentage" ? undefined : "none" }}
+            className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden"
+          >
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-cyan-500 to-indigo-500" />
 
             <div className="flex items-center gap-2.5 pb-4 border-b border-border mb-4">
@@ -8906,9 +9171,21 @@ export default function AdminDashboard() {
             </div>
           </Card>
 
-          <div className={`grid grid-cols-1 ${canManagePortalConfig ? "sm:grid-cols-2" : ""} gap-4 flex-1 items-stretch`}>
+          <div
+            className={`grid grid-cols-1 ${canManagePortalConfig ? "sm:grid-cols-2" : ""} gap-4 flex-1 items-stretch`}
+            style={{
+              display:
+                activeTab === "reset-candidate" || activeTab === "portal-config"
+                  ? undefined
+                  : "none",
+            }}
+          >
           {/* RESET CANDIDATE SESSION CARD */}
-          <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
+          <Card
+            hidden={activeTab !== "reset-candidate"}
+            style={{ display: activeTab === "reset-candidate" ? undefined : "none" }}
+            className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col"
+          >
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-amber-500 to-orange-500" />
 
             <div className="flex items-center gap-2.5 pb-4 border-b border-border mb-4">
@@ -8956,7 +9233,13 @@ export default function AdminDashboard() {
 
           {/* PORTAL TAB CONFIGURATION CARD */}
           {canManagePortalConfig && (
-          <Card className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col">
+          <Card
+            id="admin-control-portal-config"
+            role="tabpanel"
+            hidden={activeTab !== "portal-config"}
+            style={{ display: activeTab === "portal-config" ? undefined : "none" }}
+            className="p-5 border-border shadow-md bg-card rounded-3xl relative overflow-hidden flex flex-col"
+          >
             <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-violet-500 to-indigo-500" />
 
             <div className="flex items-center gap-2.5 pb-4 border-b border-border mb-4">
@@ -9024,7 +9307,7 @@ export default function AdminDashboard() {
         )}
 
         {/* System Logs Section */}
-        {portalSettings.showSystemLogsViewer && adminPermissions.systemLogs && (
+        {activeTab === "logs" && portalSettings.showSystemLogsViewer && adminPermissions.systemLogs && (
         <Card className="p-6 border-indigo-150 dark:border-slate-800 shadow-md bg-card rounded-3xl relative overflow-hidden mt-8">
           <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500" />
           
@@ -9329,6 +9612,7 @@ export default function AdminDashboard() {
           </div>
         </Card>
         )}
+        </section>
       </main>
 
       {showDetails && selectedResume && (

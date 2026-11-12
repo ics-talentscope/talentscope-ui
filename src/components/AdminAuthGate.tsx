@@ -36,6 +36,7 @@ function offerToSavePassword(id: string, password: string) {
 
 export default function AdminAuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const isAdminDashboard = pathname === "/admin";
   const [authenticated, setAuthenticated] = useState(false);
   const [initialized, setInitialized] = useState(false);
   const [email, setEmail] = useState("");
@@ -550,7 +551,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
 
   return (
     <div className="relative">
-      <div className="absolute top-4 right-4 z-50 flex items-center gap-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md rounded-xl shadow-soft border border-border px-3 py-2">
+      <div className={`admin-auth-signout ${isAdminDashboard ? "admin-dashboard-signout" : "admin-detail-signout"}`}>
         <span className="text-xs font-semibold text-primary truncate max-w-[120px]">{email}</span>
         <Button variant="outline" size="sm" onClick={() => handleLogout()} className="gap-2 rounded-lg border-border text-primary hover:bg-secondary">
           <Lock className="w-3.5 h-3.5" /> Sign out
