@@ -55,6 +55,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
   const [sessionExpired, setSessionExpired] = useState(false);
   const [reauthPassword, setReauthPassword] = useState("");
   const [reauthError, setReauthError] = useState("");
+  const sessionExpiredRef = useRef(false);
   const isIdleRef = useRef(false);
   const resetTimerRef = useRef<(() => void) | null>(null);
   const lastActivityRef = useRef(Date.now());
@@ -194,6 +195,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
   };
 
   const handleLogout = (reason?: string) => {
+    sessionExpiredRef.current = false;
     if (typeof window !== "undefined") {
       window.sessionStorage.removeItem(STORAGE_KEY);
       window.sessionStorage.removeItem("admin-email");
@@ -325,7 +327,8 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
 
   useEffect(() => {
     const onExpired = () => {
-      setReauthPassword("");
+      if (sessionExpiredRef.current) return;
+      sessionExpiredRef.current = true;
       setReauthError("");
       setSessionExpired(true);
     };
@@ -351,6 +354,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
         storeAdminAccessFlags(accessFlagsFromPayload(data));
         setReauthPassword("");
         setSessionExpired(false);
+        sessionExpiredRef.current = false;
         lastActivityRef.current = Date.now();
       } else {
         setReauthError(data.error || "Invalid password. Please try again.");

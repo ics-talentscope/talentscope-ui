@@ -38,6 +38,7 @@ import {
   KeyRound,
   Check,
   Percent,
+  Search,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { formatPortalTimestamp } from "@/lib/portal-format";
@@ -75,7 +76,7 @@ import {
 } from "@/lib/portal-test-status";
 import { formatProductDisplayName } from "@/lib/product-display-name";
 import { getPortalPrimaryProctoring } from "@/lib/portal-proctor-display";
-import { calculateSkillMatch, candidateMatchText, compareMatchRank, compileJdForMatch, decisionFromScore, employeeMatchText, extractJdMandatorySkills, extractJdPrimarySkills, QUALIFIED_COVERAGE_PERCENT, scoreOverrideForJd, type SkillBreakdownItem, type ScoreParts } from "@/lib/skill-match";
+import { calculateSkillMatch, candidateMatchText, compareMatchRank, compileJdForMatch, decisionFromScore, employeeMatchText, extractJdMandatorySkills, extractJdPrimarySkills, profileExperienceYears, QUALIFIED_COVERAGE_PERCENT, scoreOverrideForJd, type SkillBreakdownItem, type ScoreParts } from "@/lib/skill-match";
 import {
   ADMIN_SESSION_EXPIRED_EVENT,
   accessFlagsFromPayload,
@@ -86,6 +87,7 @@ import {
 } from "@/lib/admin-accounts";
 import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
 import { EmployeePortalManager } from "@/components/admin/EmployeePortalManager";
+import { QuickSearchModal } from "@/components/admin/QuickSearchModal";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
 function portalEmployeeName(account: { full_name?: string | null; employee_id?: string | null }): string {
@@ -98,7 +100,87 @@ function portalEmployeeId(account: { employee_id?: string | null }): string {
   return account.employee_id?.trim() || "—";
 }
 
+function normalizeEmployeeId(value: unknown): string {
+  return String(value || "").trim().replace(/^(\d+)\.0+$/, "$1").toLowerCase();
+}
+
 const CORP_POOL_EARLIER_BATCH = "__earlier__";
+const ADMIN_LIST_PAGE_SIZES = [25, 50, 75, 100] as const;
+const DEFAULT_ADMIN_LIST_PAGE_SIZE = ADMIN_LIST_PAGE_SIZES[0];
+
+function getPageItems<T>(items: T[], page: number, pageSize: number): T[] {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(Math.max(page, 1), pageCount);
+  const start = (safePage - 1) * pageSize;
+  return items.slice(start, start + pageSize);
+}
+
+function AdminListPagination({
+  page,
+  total,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(page, 1), pageCount);
+  const firstItem = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const lastItem = Math.min(currentPage * pageSize, total);
+
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-xs text-muted-foreground">
+      <span>
+        Showing {firstItem}–{lastItem} of {total}
+      </span>
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-1.5 whitespace-nowrap font-semibold">
+          Rows per page
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value))}
+            className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+            aria-label="Rows per page"
+          >
+            {ADMIN_LIST_PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
+        <nav className="flex items-center gap-2" aria-label="List pagination">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={currentPage === 1}
+            onClick={() => onPageChange(currentPage - 1)}
+            className="h-8 rounded-lg px-2.5 text-xs"
+          >
+            Previous
+          </Button>
+          <span aria-live="polite">
+            Page {currentPage} of {pageCount}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={currentPage === pageCount}
+            onClick={() => onPageChange(currentPage + 1)}
+            className="h-8 rounded-lg px-2.5 text-xs"
+          >
+            Next
+          </Button>
+        </nav>
+      </div>
+    </div>
+  );
+}
 
 // macOS file pickers grey out files whose type isn't listed, so give MIME types alongside extensions.
 const FILE_TYPES = {
@@ -677,7 +759,12 @@ function adminFetchNow(input: RequestInfo | URL, init?: RequestInit): Promise<Re
     ...init,
     headers: headersObj,
   }).then((res) => {
-    if (res.status === 401 && typeof window !== "undefined") {
+    if (
+      res.status === 401 &&
+      token &&
+      typeof window !== "undefined" &&
+      window.sessionStorage.getItem("admin_token") === token
+    ) {
       window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
     }
     return res;
@@ -1041,7 +1128,13 @@ function calculateCandidateMatch(row: any, jdText: string) {
       rationale: "No skills or requirement text to score.",
     };
   }
-  return calculateSkillMatch(candidateMatchText(row), jdText);
+  const profileText = candidateMatchText(row);
+  const years = profileExperienceYears(
+    row.parsed?.experience,
+    row.parsed?.yearsExperience ?? row.yearsExperience ?? row.years_experience,
+    profileText
+  );
+  return calculateSkillMatch(profileText, jdText, undefined, years);
 }
 
 
@@ -1274,10 +1367,13 @@ export default function AdminDashboard() {
   const [resettingPortalPasswordEmployeeId, setResettingPortalPasswordEmployeeId] = useState<string | null>(null);
   const [savingPortalEmployeeId, setSavingPortalEmployeeId] = useState<string | null>(null);
   const [testResultsSearch, setTestResultsSearch] = useState("");
+  const [testResultsSearchDraft, setTestResultsSearchDraft] = useState("");
   const [testStatusFilter, setTestStatusFilter] = useState<PortalTestStatusFilter>("all");
   const [portalProductFilter, setPortalProductFilter] = useState<string>("all");
   const [portalDomainFilter, setPortalDomainFilter] = useState<string>("all");
   const [portalCompletedDateFilter, setPortalCompletedDateFilter] = useState<string>("all");
+  const [portalPage, setPortalPage] = useState(1);
+  const [adminListPageSize, setAdminListPageSize] = useState<number>(DEFAULT_ADMIN_LIST_PAGE_SIZE);
   const [portalCompletedDateMenu, setPortalCompletedDateMenu] = useState<PortalCompletedDateMenu>({
     type: "root",
   });
@@ -1329,18 +1425,40 @@ export default function AdminDashboard() {
     total: number;
   } | null>(null);
   const [activeEmployee, setActiveEmployee] = useState<any>(null);
+  const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [employeeSearch, setEmployeeSearch] = useState("");
+  const [employeeSearchDraft, setEmployeeSearchDraft] = useState("");
+  const [corpPoolPage, setCorpPoolPage] = useState(1);
   const [qwenScoring, setQwenScoring] = useState(false);
   const [qwenProgress, setQwenProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedPool, setSelectedPool] = useState<{ ids: string[]; dateLabel: string } | null>(readStoredSelectedPool);
   const qwenScanSeqRef = useRef(0);
   const qwenScanIdRef = useRef("");
   const [requirementSearch, setRequirementSearch] = useState("");
+  const [requirementSearchDraft, setRequirementSearchDraft] = useState("");
+  const [requirementPage, setRequirementPage] = useState(1);
   const [requirementDateFilter, setRequirementDateFilter] = useState("all");
   const [requirementSkillFilter, setRequirementSkillFilter] = useState("all");
   const [candidateSearch, setCandidateSearch] = useState("");
+  const [candidateSearchDraft, setCandidateSearchDraft] = useState("");
+  const [candidatePage, setCandidatePage] = useState(1);
   const [outboxSearch, setOutboxSearch] = useState("");
+  const [outboxSearchDraft, setOutboxSearchDraft] = useState("");
+  const [outboxPage, setOutboxPage] = useState(1);
   const [expandedJdId, setExpandedJdId] = useState<string | null>(null);
+
+  const handleAdminListPageSizeChange = useCallback((pageSize: number) => {
+    setAdminListPageSize(pageSize);
+    setPortalPage(1);
+    setRequirementPage(1);
+    setCandidatePage(1);
+    setCorpPoolPage(1);
+    setOutboxPage(1);
+  }, []);
+
+  useEffect(() => {
+    setCandidatePage(1);
+  }, [activeTab]);
 
   const [portalSettings, setPortalSettings] = useState({
     showSystemLogsViewer: true,
@@ -2163,6 +2281,38 @@ export default function AdminDashboard() {
     portalProductFilter,
     portalDomainFilter,
   ]);
+  const portalTestAverages = useMemo(() => {
+    const totals = new Map<string, { sum: number; count: number }>();
+    for (const account of resourcePortalEmployees) {
+      const employeeKey = normalizeEmployeeId(account.employee_id);
+      if (!employeeKey) continue;
+      const tests = Array.isArray(account.tests) ? account.tests : [];
+      for (const test of tests) {
+        if (mapBackendTestStatus(test.status) !== "completed" || test.score == null) continue;
+        const score = Number(test.score);
+        const max = Number(test.scoreMax ?? test.totalQuestions ?? 25);
+        if (!Number.isFinite(score) || !Number.isFinite(max) || max <= 0) continue;
+        const percentage = portalScorePercent(score, max);
+        if (percentage == null) continue;
+        const total = totals.get(employeeKey) || { sum: 0, count: 0 };
+        total.sum += percentage;
+        total.count += 1;
+        totals.set(employeeKey, total);
+      }
+    }
+    const averages = new Map<string, number>();
+    for (const [employeeKey, total] of totals) {
+      averages.set(employeeKey, total.sum / total.count);
+    }
+    return averages;
+  }, [resourcePortalEmployees]);
+  const portalPageRows = useMemo(
+    () => getPageItems(filteredPortalEmployees, portalPage, adminListPageSize),
+    [filteredPortalEmployees, portalPage, adminListPageSize]
+  );
+  useEffect(() => {
+    setPortalPage(1);
+  }, [testStatusFilter, portalCompletedDateFilter, portalProductFilter, portalDomainFilter]);
 
   const portalDateOnlyMatchCount = useMemo(() => {
     if (portalCompletedDateFilter === "all") return 0;
@@ -2183,6 +2333,8 @@ export default function AdminDashboard() {
 
   const clearPortalFilters = () => {
     setTestResultsSearch("");
+    setTestResultsSearchDraft("");
+    setPortalPage(1);
     setTestStatusFilter("all");
     setPortalProductFilter("all");
     setPortalDomainFilter("all");
@@ -4460,6 +4612,30 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleResetCandidatePassword = async (resume: any) => {
+    const email = String(resume.parsed?.personal?.email || "").trim();
+    if (!email || !window.confirm(`Email a new 12-character temporary password to ${email}? Their current password will stop working.`)) {
+      return;
+    }
+
+    setActionLoading(`reset-password-${resume.id}`);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(`/api/admin/resumes/${resume.id}/reset-password`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Failed to reset candidate password.");
+      await loadEmails();
+      setActionSuccess(`A new temporary password was emailed to ${email}.`);
+      setTimeout(() => setActionSuccess(null), 5000);
+    } catch (error: any) {
+      setActionError(error.message || "Failed to reset candidate password.");
+      setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleConfirmSendInvite = async () => {
     if (!inviteTargetResume) return;
     const resume = inviteTargetResume;
@@ -4513,6 +4689,13 @@ export default function AdminDashboard() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to dispatch invite email");
 
+      if (String(data.status || "").toLowerCase() === "sent") {
+        setResumes((prev) => prev.map((item) =>
+          item.id === resume.id
+            ? { ...item, report: { ...(item.report || {}), inviteEmailStatus: "sent" } }
+            : item
+        ));
+      }
       await loadEmails();
       const sendStatus = String(data.status || "").toLowerCase();
       if (sendStatus === "sent") {
@@ -5088,7 +5271,7 @@ export default function AdminDashboard() {
           matchRationale: row.report?.jdMatchRationale || "",
         };
       }
-      const result = calculateSkillMatch(candidateMatchText(row), jdText);
+      const result = calculateCandidateMatch(row, jdText);
       return {
         ...row,
         score: Number(result.score) || 0,
@@ -5193,11 +5376,15 @@ export default function AdminDashboard() {
     return orderedJds;
   }, [filteredJds, requirementSearch, requirementDateFilter, requirementSkillFilter, pinnedJdId]);
 
+  const requirementPageRows = useMemo(
+    () => getPageItems(visibleRequirementRows, requirementPage, adminListPageSize),
+    [visibleRequirementRows, requirementPage, adminListPageSize]
+  );
   const visibleRequirementIds = visibleRequirementRows.map((row) => row.jd.id);
 
   const requirementUploadGroups = useMemo(() => {
-    const groups = new Map<string, typeof visibleRequirementRows>();
-    for (const row of visibleRequirementRows) {
+    const groups = new Map<string, typeof requirementPageRows>();
+    for (const row of requirementPageRows) {
       const key = uploadGroupKey(row.isDuplicate && row.ogJd ? row.ogJd : row.jd);
       const list = groups.get(key) || [];
       list.push(row);
@@ -5210,7 +5397,7 @@ export default function AdminDashboard() {
       label: labels.get(key) || uploadGroupDayLabel(key),
       rows: groups.get(key) || [],
     }));
-  }, [visibleRequirementRows]);
+  }, [requirementPageRows]);
 
   const handleToggleJdSelect = (id: string) => {
     setSelectedJdIds((prev) =>
@@ -5334,6 +5521,10 @@ export default function AdminDashboard() {
       skills.toLowerCase().includes(term)
     );
   });
+  const candidatePageRows = useMemo(
+    () => getPageItems(candidatesToRender, candidatePage, adminListPageSize),
+    [candidatesToRender, candidatePage, adminListPageSize]
+  );
 
   const compiledSelectedJd = useMemo(() => {
     const jdText = jdSavedText.trim();
@@ -5349,15 +5540,26 @@ export default function AdminDashboard() {
   const scoredEmployees = useMemo(() => {
     if (!compiledSelectedJd) return employees;
     return employees.map((emp) => {
+      const profileText = employeeMatchText(emp);
+      const years = profileExperienceYears(
+        emp.experience,
+        emp.yearsExperience ?? emp.years_experience,
+        profileText
+      );
       const result = calculateSkillMatch(
-        employeeMatchText(emp),
+        profileText,
         compiledSelectedJd.jdText,
-        compiledSelectedJd
+        compiledSelectedJd,
+        years
       );
       const computed = Number(result.score) || 0;
       const override = scoreOverrideForJd(emp, selectedJdId);
       const overridden = override != null;
-      const score = overridden ? override : computed;
+      const score = overridden
+        ? result.strictRequirementsPassed
+          ? override
+          : Math.min(override, computed)
+        : computed;
       return {
         ...emp,
         score,
@@ -5366,7 +5568,7 @@ export default function AdminDashboard() {
         requiredCount: result.requiredCount,
         matchDecision: overridden ? decisionFromScore(score) : result.decision,
         matchRationale: overridden
-          ? `${emp.llm_rationale || result.rationale}${emp.llm_best_jd ? ` Best seat: ${emp.llm_best_jd}.` : ""}`
+          ? `${!result.strictRequirementsPassed && override > computed ? `Admin score override capped at ${computed}% by JD hard requirements. ` : `Admin score ${score}%. `}${emp.llm_rationale || result.rationale}${emp.llm_best_jd ? ` Best seat: ${emp.llm_best_jd}.` : ""}`
           : result.rationale,
         familyRelation: result.familyRelation,
       };
@@ -5406,7 +5608,13 @@ export default function AdminDashboard() {
         scoreParts: null as ScoreParts | null,
       };
     }
-    const result = calculateSkillMatch(employeeMatchText(activeEmployee), jdText);
+    const profileText = employeeMatchText(activeEmployee);
+    const years = profileExperienceYears(
+      activeEmployee.experience,
+      activeEmployee.yearsExperience ?? activeEmployee.years_experience,
+      profileText
+    );
+    const result = calculateSkillMatch(profileText, jdText, undefined, years);
     const required = result.skillBreakdown.map((row) => row.skill);
     const matched = result.skillBreakdown
       .filter((row) => row.scoring && (row.status === "strong" || row.status === "solid"))
@@ -5416,7 +5624,12 @@ export default function AdminDashboard() {
       .map((row) => row.skill);
     const overriddenScore = scoreOverrideForJd(activeEmployee, selectedJdId);
     const overridden = overriddenScore != null;
-    const score = overridden ? overriddenScore : Number(result.score) || 0;
+    const computedScore = Number(result.score) || 0;
+    const score = overridden
+      ? result.strictRequirementsPassed
+        ? overriddenScore
+        : Math.min(overriddenScore, computedScore)
+      : computedScore;
     return {
       personSkills,
       matched,
@@ -5425,7 +5638,7 @@ export default function AdminDashboard() {
       score,
       decision: overridden ? decisionFromScore(score) : result.decision,
       rationale: overridden
-        ? `Admin score ${score}%. ${result.rationale}`
+        ? `${!result.strictRequirementsPassed && overriddenScore > computedScore ? `Admin score override capped at ${computedScore}% by JD hard requirements. ` : `Admin score ${score}%. `}${result.rationale}`
         : result.rationale,
       matchedCount: result.matchedCount,
       requiredCount: result.requiredCount,
@@ -5458,14 +5671,25 @@ export default function AdminDashboard() {
 
   const selectedPoolIdSet = useMemo(() => new Set(selectedPool?.ids || []), [selectedPool]);
 
+  const corpPoolOrderedEmployees = useMemo(() => {
+    if (!selectedPoolIdSet.size) return filteredEmployees;
+    return [
+      ...filteredEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id)),
+      ...filteredEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id)),
+    ];
+  }, [filteredEmployees, selectedPoolIdSet]);
+  const corpPoolPageEmployees = useMemo(
+    () => getPageItems(corpPoolOrderedEmployees, corpPoolPage, adminListPageSize),
+    [corpPoolOrderedEmployees, corpPoolPage, adminListPageSize]
+  );
   const corpPoolEmployeeGroups = useMemo(() => {
     const poolEmployees = selectedPoolIdSet.size
-      ? filteredEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id))
+      ? corpPoolPageEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id))
       : [];
     const restEmployees = selectedPoolIdSet.size
-      ? filteredEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id))
-      : filteredEmployees;
-    const groups = new Map<string, typeof filteredEmployees>();
+      ? corpPoolPageEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id))
+      : corpPoolPageEmployees;
+    const groups = new Map<string, typeof corpPoolPageEmployees>();
     for (const emp of restEmployees) {
       const key = uploadGroupKey(emp);
       const list = groups.get(key) || [];
@@ -5492,7 +5716,7 @@ export default function AdminDashboard() {
       ];
     }
     return restGroups;
-  }, [filteredEmployees, selectedPool, selectedPoolIdSet]);
+  }, [corpPoolPageEmployees, selectedPool, selectedPoolIdSet]);
 
   const shortlistedCount = scoredEmployees.filter((emp) => emp.shortlisted).length;
   const selectedUnshortlistedIds = selectedEmployeeIds.filter((id) =>
@@ -5646,6 +5870,10 @@ export default function AdminDashboard() {
       status.toLowerCase().includes(term)
     );
   });
+  const outboxPageRows = useMemo(
+    () => getPageItems(emailsToRender, outboxPage, adminListPageSize),
+    [emailsToRender, outboxPage, adminListPageSize]
+  );
 
   if (!authInitialized) {
     return <CenteredPageLoading label="Loading admin gateway" />;
@@ -5887,19 +6115,32 @@ export default function AdminDashboard() {
                   <div className="space-y-4">
                     {/* Search + filters */}
                     <div className="flex flex-col xl:flex-row gap-3 justify-between items-stretch xl:items-center shrink-0">
-                      <div className="w-full xl:flex-1 min-w-0 relative">
+                      <form
+                        className="w-full xl:flex-1 min-w-0 flex gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          setRequirementSearch(requirementSearchDraft.trim());
+                          setRequirementPage(1);
+                        }}
+                      >
                         <input
                           type="text"
                           placeholder="Search Requirements (BR / JD)..."
-                          value={requirementSearch}
-                          onChange={(e) => setRequirementSearch(e.target.value)}
+                          value={requirementSearchDraft}
+                          onChange={(e) => setRequirementSearchDraft(e.target.value)}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                         />
-                      </div>
+                        <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                          Search
+                        </Button>
+                      </form>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full xl:w-auto xl:min-w-[24rem]">
                         <select
                           value={requirementDateFilter}
-                          onChange={(e) => setRequirementDateFilter(e.target.value)}
+                          onChange={(e) => {
+                            setRequirementDateFilter(e.target.value);
+                            setRequirementPage(1);
+                          }}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                           aria-label="Filter requirements by created date"
                         >
@@ -5912,7 +6153,10 @@ export default function AdminDashboard() {
                         </select>
                         <select
                           value={requirementSkillFilter}
-                          onChange={(e) => setRequirementSkillFilter(e.target.value)}
+                          onChange={(e) => {
+                            setRequirementSkillFilter(e.target.value);
+                            setRequirementPage(1);
+                          }}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                           aria-label="Filter requirements by skill"
                         >
@@ -6257,6 +6501,8 @@ export default function AdminDashboard() {
                                               setJdSavedText(j.jdText);
                                               setJdText(j.jdText);
                                               setEmployeeSearch("");
+                                              setEmployeeSearchDraft("");
+                                              setCorpPoolPage(1);
                                               setActiveTab("employee");
                                               void fetch(
                                                 `/api/admin/refresh?type=sync-selected&activeJdId=${encodeURIComponent(j.id)}`,
@@ -6356,6 +6602,13 @@ export default function AdminDashboard() {
                         </table>
                       </div>
                     </div>
+                    <AdminListPagination
+                      page={requirementPage}
+                      total={visibleRequirementRows.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setRequirementPage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
                   </div>
                 ) : activeTab === "employee" ? (
                   <div className="space-y-4">
@@ -6400,21 +6653,51 @@ export default function AdminDashboard() {
                       </div>
 
                       {/* Search and export controls */}
-                      <div className="flex flex-col sm:flex-row gap-3 justify-between items-center shrink-0">
-                        <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
-                          <div className="w-full sm:w-72 relative">
-                            <input
-                              type="text"
-                              placeholder="Search Corp Pool..."
-                              value={employeeSearch}
-                              onChange={(e) => setEmployeeSearch(e.target.value)}
-                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                            />
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
+                      <div className="grid grid-cols-1 gap-3 items-start shrink-0 xl:grid-cols-[minmax(0,1fr)_auto]">
+                        <div className="min-w-0 flex flex-col gap-2">
+                          <form
+                            className="flex w-full min-w-0 gap-2 sm:w-auto sm:self-start"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              setEmployeeSearch(employeeSearchDraft.trim());
+                              setCorpPoolPage(1);
+                            }}
+                          >
+                            <div className="relative min-w-0 flex-1 sm:w-[36rem] sm:flex-none sm:max-w-[calc(100vw-10rem)]">
+                              <input
+                                type="text"
+                                placeholder="Search Corp Pool..."
+                                value={employeeSearchDraft}
+                                onChange={(e) => setEmployeeSearchDraft(e.target.value)}
+                                className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                              />
+                              {employeeSearchDraft || employeeSearch ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEmployeeSearch("");
+                                    setEmployeeSearchDraft("");
+                                    setCorpPoolPage(1);
+                                  }}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                  aria-label="Clear Corp Pool search"
+                                  title="Clear search"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              ) : null}
+                            </div>
+                            <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                              Search
+                            </Button>
+                          </form>
+                          <div className="flex flex-wrap items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => setCorpPoolListFilter("all")}
+                              onClick={() => {
+                                setCorpPoolListFilter("all");
+                                setCorpPoolPage(1);
+                              }}
                               className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                                 corpPoolListFilter === "all"
                                   ? "bg-violet-600 text-white shadow-sm shadow-violet-500/30"
@@ -6425,7 +6708,10 @@ export default function AdminDashboard() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => setCorpPoolListFilter("shortlisted")}
+                              onClick={() => {
+                                setCorpPoolListFilter("shortlisted");
+                                setCorpPoolPage(1);
+                              }}
                               className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                                 corpPoolListFilter === "shortlisted"
                                   ? "bg-violet-600 text-white shadow-sm shadow-violet-500/30"
@@ -6434,9 +6720,19 @@ export default function AdminDashboard() {
                             >
                               Shortlisted ({shortlistedCount})
                             </button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowQuickSearch(true)}
+                              className="h-8 rounded-xl px-2.5 text-[10px] font-bold whitespace-nowrap"
+                            >
+                              <Search className="mr-1 h-3.5 w-3.5" />
+                              Quick Search
+                            </Button>
                           </div>
                         </div>
-                        <div className="flex gap-2 w-full sm:w-auto flex-wrap justify-end">
+                        <div className="flex w-full flex-wrap content-start justify-start gap-2 sm:w-auto sm:justify-end xl:max-w-[36rem] xl:border-l xl:border-border xl:pl-3 xl:justify-start">
                           {(selectedEmployeeIds.length > 0 || Boolean(selectedPool?.ids.length)) && (
                             <Button
                               size="sm"
@@ -6570,6 +6866,14 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
+                      <AdminListPagination
+                        page={corpPoolPage}
+                        total={filteredEmployees.length}
+                        pageSize={adminListPageSize}
+                        onPageChange={setCorpPoolPage}
+                        onPageSizeChange={handleAdminListPageSizeChange}
+                      />
+
                       {/* Employee Table */}
                       <div className="border border-border rounded-2xl overflow-hidden">
                         <div className="overflow-auto max-h-[500px]">
@@ -6588,6 +6892,12 @@ export default function AdminDashboard() {
                                 <th className="p-3">Employee ID</th>
                                 <th className="p-3">Department</th>
                                 <th className="p-3">Skills</th>
+                                <th
+                                  className="p-3 text-center whitespace-nowrap"
+                                  title="Average percentage across completed portal tests for the matching Employee ID."
+                                >
+                                  Employee Portal Tests (Avg)
+                                </th>
                                 <th className="p-3">Score</th>
                                 <th className="p-3 text-center">Shortlist</th>
                                 <th className="p-3 text-center">Actions</th>
@@ -6599,7 +6909,7 @@ export default function AdminDashboard() {
                                   {group.employees.length > 0 && (
                                     <UploadDateHeaderRow
                                       label={group.label}
-                                      colSpan={8}
+                                      colSpan={9}
                                       showDivider={groupIndex > 0}
                                       groupIds={group.employees.map((emp) => emp.employee_id)}
                                       selectedIds={selectedEmployeeIds}
@@ -6773,6 +7083,11 @@ export default function AdminDashboard() {
                                         </div>
                                       )}
                                     </td>
+                                    <td className="p-3 text-center font-semibold text-slate-500 whitespace-nowrap">
+                                      {portalTestAverages.has(normalizeEmployeeId(emp.employee_id))
+                                        ? `${Math.round(portalTestAverages.get(normalizeEmployeeId(emp.employee_id)) || 0)}%`
+                                        : "-"}
+                                    </td>
                                     <td className="p-3">
                                       <span
                                         className={`font-black text-sm ${
@@ -6831,7 +7146,7 @@ export default function AdminDashboard() {
                               ))}
                               {filteredEmployees.length === 0 && (
                                 <tr>
-                                  <td colSpan={8} className="text-center py-12 text-slate-400 italic">
+                                  <td colSpan={9} className="text-center py-12 text-slate-400 italic">
                                     {corpPoolListFilter === "shortlisted"
                                       ? "No shortlisted people yet. Click Shortlist on a row."
                                       : "No people in Corp Pool match this search."}
@@ -6880,27 +7195,43 @@ export default function AdminDashboard() {
                       </div>
                     </div>
 
-                    <div className="grid min-w-0 grid-cols-1 items-end gap-3 shrink-0 xl:grid-cols-[minmax(0,1fr)_auto]">
-                      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))] gap-3">
-                        <div className="relative min-w-0">
-                          <input
-                            type="text"
-                            placeholder="Search Employee Portal (name, ID, product, email)..."
-                            value={testResultsSearch}
-                            onChange={(e) => setTestResultsSearch(e.target.value)}
-                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                          />
-                          {testResultsSearch ? (
-                            <button
-                              type="button"
-                              onClick={() => setTestResultsSearch("")}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                              aria-label="Clear search"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          ) : null}
-                        </div>
+                    <div className="grid min-w-0 grid-cols-1 items-end gap-3 shrink-0 2xl:grid-cols-[minmax(0,1fr)_auto]">
+                      <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(28rem,2fr)_repeat(4,minmax(9rem,1fr))]">
+                        <form
+                          className="min-w-0 flex gap-1.5 md:col-span-2 xl:col-span-1"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setTestResultsSearch(testResultsSearchDraft.trim());
+                            setPortalPage(1);
+                          }}
+                        >
+                          <div className="relative min-w-0 flex-1">
+                            <input
+                              type="text"
+                              placeholder="Search Employee Portal (name, ID, product, email)..."
+                              value={testResultsSearchDraft}
+                              onChange={(e) => setTestResultsSearchDraft(e.target.value)}
+                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            />
+                            {testResultsSearchDraft ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTestResultsSearch("");
+                                  setTestResultsSearchDraft("");
+                                  setPortalPage(1);
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                aria-label="Clear search"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            ) : null}
+                          </div>
+                          <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                            Search
+                          </Button>
+                        </form>
                         <div className="min-w-0">
                           <select
                             value={portalProductFilter}
@@ -7182,7 +7513,11 @@ export default function AdminDashboard() {
                         {testResultsSearch.trim() ? (
                           <button
                             type="button"
-                            onClick={() => setTestResultsSearch("")}
+                            onClick={() => {
+                              setTestResultsSearch("");
+                              setTestResultsSearchDraft("");
+                              setPortalPage(1);
+                            }}
                             className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
                           >
                             Search: {testResultsSearch.trim()}
@@ -7329,6 +7664,14 @@ export default function AdminDashboard() {
                       </div>
                     )}
 
+                    <AdminListPagination
+                      page={portalPage}
+                      total={filteredPortalEmployees.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setPortalPage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
+
                     <div className="border border-border rounded-2xl overflow-hidden">
                       <div className="overflow-auto max-h-[600px]">
                         <table className="w-full text-left border-collapse text-xs min-w-[1430px]">
@@ -7365,7 +7708,7 @@ export default function AdminDashboard() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-800/50">
-                            {filteredPortalEmployees
+                            {portalPageRows
                               .map(account => {
                                 const isExpanded = !!expandedEmployees[account.employee_id];
                                 const statusLabel = getPortalTestStatusLabel(account.test_status);
@@ -7516,7 +7859,7 @@ export default function AdminDashboard() {
                                         })()}
                                       </td>
                                       <td className="p-3">
-                                        <div className="grid min-w-[19rem] grid-cols-2 gap-1.5">
+                                        <div className="grid min-w-[24rem] grid-cols-3 grid-rows-2 gap-1.5">
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -8028,15 +8371,25 @@ export default function AdminDashboard() {
                   ) : (
                     <div className="space-y-4">
                       {/* Search Bar for Outbox */}
-                      <div className="relative shrink-0">
+                      <form
+                        className="flex shrink-0 gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          setOutboxSearch(outboxSearchDraft.trim());
+                          setOutboxPage(1);
+                        }}
+                      >
                         <input
                           type="text"
                           placeholder="Search Email Outbox..."
-                          value={outboxSearch}
-                          onChange={(e) => setOutboxSearch(e.target.value)}
+                          value={outboxSearchDraft}
+                          onChange={(e) => setOutboxSearchDraft(e.target.value)}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                         />
-                      </div>
+                        <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
+                          Search
+                        </Button>
+                      </form>
 
                       <div className="flex items-center justify-between pb-2 border-b border-border shrink-0">
                         <div className="flex items-center gap-2">
@@ -8084,6 +8437,14 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
+                      <AdminListPagination
+                        page={outboxPage}
+                        total={emailsToRender.length}
+                        pageSize={adminListPageSize}
+                        onPageChange={setOutboxPage}
+                        onPageSizeChange={handleAdminListPageSizeChange}
+                      />
+
                       <div className="space-y-3 max-h-[550px] overflow-y-auto pr-1">
                         {emailsToRender.length === 0 ? (
                           <div className="flex flex-col items-center justify-center py-12 text-center space-y-2">
@@ -8091,7 +8452,7 @@ export default function AdminDashboard() {
                             <h4 className="font-bold text-slate-700 text-xs">No matching outbox emails found</h4>
                           </div>
                         ) : (
-                          emailsToRender.map((email) => {
+                          outboxPageRows.map((email) => {
                             return (
                             <Card
                               key={email.id}
@@ -8186,15 +8547,25 @@ export default function AdminDashboard() {
                       )}
                       {/* Candidate Search Bar */}
                       {(suitableCandidates.length > 0 || unsuitableCandidates.length > 0 || candidateSearch) && (
-                        <div className="relative shrink-0">
+                        <form
+                          className="flex shrink-0 gap-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setCandidateSearch(candidateSearchDraft.trim());
+                            setCandidatePage(1);
+                          }}
+                        >
                           <input
                             type="text"
                             placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
-                            value={candidateSearch}
-                            onChange={(e) => setCandidateSearch(e.target.value)}
+                            value={candidateSearchDraft}
+                            onChange={(e) => setCandidateSearchDraft(e.target.value)}
                             className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                           />
-                        </div>
+                          <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
+                            Search
+                          </Button>
+                        </form>
                       )}
 
                       {candidatesToRender.length === 0 ? (
@@ -8249,10 +8620,22 @@ export default function AdminDashboard() {
                         </Button>
                       )}
                     </div>
+                    <AdminListPagination
+                      page={candidatePage}
+                      total={candidatesToRender.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setCandidatePage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
                     <div className="space-y-4 max-h-[550px] overflow-y-auto pr-1">
-                      {candidatesToRender.map((row) => {
+                      {candidatePageRows.map((row) => {
                       const isInterviewComplete = row.isConcluded || (row.interview_attempts && row.interview_attempts.length > 0);
                       const hasVideoRecording = !!row.report?.videoUrl;
+                      const candidateEmail = String(row.parsed?.personal?.email || "").trim().toLowerCase();
+                      const hasSentInvite = row.report?.inviteEmailStatus === "sent" || emails.some(e =>
+                        String(e.to || "").trim().toLowerCase() === candidateEmail &&
+                        String(e.status || "").toLowerCase() === "sent"
+                      );
 
                       return (
                         <Card 
@@ -8284,8 +8667,11 @@ export default function AdminDashboard() {
                                      </Badge>
                                    )}
                                    {hasVideoRecording && (
-                                     <Badge className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 font-black text-[9px] px-2 py-0 flex items-center gap-1 hover:bg-rose-100/50">
-                                       <Video className="w-3 h-3 text-rose-500" /> RECORDING
+                                     <Badge
+                                       title="Interview recording saved and available."
+                                       className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 font-black text-[9px] px-2 py-0 flex items-center gap-1 hover:bg-rose-100/50"
+                                     >
+                                       <Video className="w-3 h-3 text-rose-500" /> RECORDING SAVED
                                      </Badge>
                                    )}
                                    {row.reset && (
@@ -8293,7 +8679,7 @@ export default function AdminDashboard() {
                                        Test Reset
                                      </Badge>
                                    )}
-                                   {emails.some(e => e.to === (row.parsed?.personal?.email || "")) && (
+                                   {hasSentInvite && (
                                      <Badge className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 border-0 font-bold text-[9px] px-2 py-0.5 ml-2">
                                        Mail Sent
                                      </Badge>
@@ -8412,7 +8798,7 @@ export default function AdminDashboard() {
                               <div className="flex flex-wrap gap-2 items-center">
                                 {isInterviewComplete ? (
                                   <Badge className="bg-emerald-500 text-white font-bold shadow-sm shadow-emerald-500/25">
-                                    Interview Completed ({row.interview_attempts.length})
+                                    Interview Completed
                                   </Badge>
                                 ) : (
                                   <Badge className="bg-red-500 text-white border-0 font-bold shadow-sm shadow-red-500/25">
@@ -8456,6 +8842,26 @@ export default function AdminDashboard() {
                                     ) : (
                                       <>
                                         <Mail className="w-3.5 h-3.5" /> Send Invite Mail
+                                      </>
+                                    )}
+                                  </Button>
+                                )}
+
+                                {getSuitability(row) === "suitable" && !isInterviewComplete && hasSentInvite && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={actionLoading === `reset-password-${row.id}`}
+                                    onClick={() => handleResetCandidatePassword(row)}
+                                    className="h-8 text-[11px] font-bold border-indigo-100 text-indigo-600 hover:bg-indigo-50 rounded-xl flex items-center gap-1"
+                                  >
+                                    {actionLoading === `reset-password-${row.id}` ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Resetting...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <KeyRound className="w-3.5 h-3.5" /> Reset Password
                                       </>
                                     )}
                                   </Button>
@@ -10828,6 +11234,20 @@ export default function AdminDashboard() {
             </div>
           </Card>
         </div>
+      )}
+
+      {showQuickSearch && (
+        <QuickSearchModal
+          employees={employees}
+          candidates={resumes}
+          jds={jds}
+          initialJdId={
+            selectedJdId && selectedJdId !== "all" && !selectedJdId.includes("@")
+              ? selectedJdId
+              : ""
+          }
+          onClose={() => setShowQuickSearch(false)}
+        />
       )}
     </div>
   );
