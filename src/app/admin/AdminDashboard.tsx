@@ -104,6 +104,10 @@ function normalizeEmployeeId(value: unknown): string {
   return String(value || "").trim().replace(/^(\d+)\.0+$/, "$1").toLowerCase();
 }
 
+function isArchivedPortalTest(test: { topicId?: string | null }): boolean {
+  return String(test.topicId ?? "").startsWith("resource-product-assessment-history");
+}
+
 const CORP_POOL_EARLIER_BATCH = "__earlier__";
 const ADMIN_LIST_PAGE_SIZES = [25, 50, 75, 100] as const;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = ADMIN_LIST_PAGE_SIZES[0];
@@ -1362,7 +1366,10 @@ export default function AdminDashboard() {
     testId: string;
     employeeId: string;
     employeeName: string;
+    testTitle: string;
   } | null>(null);
+  // Exactly one live test can be selected per employee for a reset.
+  const [selectedResetTestByEmployee, setSelectedResetTestByEmployee] = useState<Record<string, string>>({});
   const [resetPortalPasswordTarget, setResetPortalPasswordTarget] = useState<{
     employeeId: string;
     employeeName: string;
@@ -2457,19 +2464,20 @@ export default function AdminDashboard() {
   const handleResetEmployeeTestClick = (
     testId: string | null,
     employeeId: string,
-    employeeName: string
+    employeeName: string,
+    testTitle: string
   ) => {
     if (!testId) {
       setActionError("No assigned test found for this employee.");
       return;
     }
-    setResetTargetEmployee({ testId, employeeId, employeeName });
+    setResetTargetEmployee({ testId, employeeId, employeeName, testTitle });
   };
 
   const handleConfirmResetEmployeeTest = async () => {
     if (!resetTargetEmployee) return;
 
-    const { testId, employeeId } = resetTargetEmployee;
+    const { testId, employeeId, testTitle } = resetTargetEmployee;
     setResetTargetEmployee(null);
     setResettingTestId(testId);
     setActionError(null);
@@ -2483,10 +2491,15 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to reset test");
-      setActionSuccess(`Previous attempt saved for review. Test reset for employee ${employeeId}.`);
+      setActionSuccess(`Previous attempt saved for review. ${testTitle} reset for employee ${employeeId}.`);
       setTestAttemptDetails((prev) => {
         const next = { ...prev };
         delete next[testId];
+        return next;
+      });
+      setSelectedResetTestByEmployee((prev) => {
+        const next = { ...prev };
+        delete next[employeeId];
         return next;
       });
       await loadEmployees({ fresh: true });
@@ -7551,6 +7564,14 @@ export default function AdminDashboard() {
                                 const isExpanded = !!expandedEmployees[account.employee_id];
                                 const statusLabel = getPortalTestStatusLabel(account.test_status);
                                 const videoTest = portalVideoTest(account);
+                                const resettableTests = (account.tests ?? []).filter((test: any) => !isArchivedPortalTest(test));
+                                const storedResetTestId = selectedResetTestByEmployee[account.employee_id] ?? "";
+                                const selectedResetTestId = resettableTests.some((test: any) => test.id === storedResetTestId)
+                                  ? storedResetTestId
+                                  : resettableTests.length === 1
+                                    ? resettableTests[0].id
+                                    : "";
+                                const selectedResetTest = resettableTests.find((test: any) => test.id === selectedResetTestId);
 
                                 return (
                                   <React.Fragment key={account.employee_id}>
@@ -7747,17 +7768,25 @@ export default function AdminDashboard() {
                                           <Button
                                             size="sm"
                                             variant="outline"
-                                            disabled={!account.test_id || resettingTestId === account.test_id}
+                                            disabled={!selectedResetTestId || resettingTestId === selectedResetTestId}
+                                            title={
+                                              resettingTestId === selectedResetTestId
+                                                ? "Resetting the selected test..."
+                                                : !selectedResetTestId
+                                                  ? "Expand employee details and select one test to enable reset"
+                                                  : `Reset ${portalTestTitle(selectedResetTest?.topicTitle)}`
+                                            }
                                             onClick={() =>
                                               handleResetEmployeeTestClick(
-                                                account.test_id,
+                                                selectedResetTestId,
                                                 account.employee_id,
-                                                portalEmployeeName(account)
+                                                portalEmployeeName(account),
+                                                portalTestTitle(selectedResetTest?.topicTitle)
                                               )
                                             }
                                             className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
                                           >
-                                            {resettingTestId === account.test_id ? (
+                                            {resettingTestId === selectedResetTestId ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                             ) : (
                                               <>
@@ -7865,6 +7894,7 @@ export default function AdminDashboard() {
                                                 <table className="w-full text-left border-collapse text-xs">
                                                   <thead>
                                                     <tr className="bg-slate-50 dark:bg-slate-900 border-b border-indigo-50 dark:border-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
+                                                      <th className="p-2.5">Reset</th>
                                                       <th className="p-2.5">Topic / Subject</th>
                                                       <th className="p-2.5">Difficulty</th>
                                                       <th className="p-2.5">Questions</th>
@@ -7878,6 +7908,22 @@ export default function AdminDashboard() {
                                                     {account.tests.map((test: any) => (
                                                       <React.Fragment key={test.id}>
                                                       <tr className="hover:bg-slate-50/30 dark:hover:bg-slate-900/20">
+                                                        <td className="p-2.5">
+                                                          {isArchivedPortalTest(test) ? (
+                                                            <span className="text-[9px] text-slate-400" title="Archived previous attempt cannot be reset">—</span>
+                                                          ) : (
+                                                            <input
+                                                              type="radio"
+                                                              name={`reset-test-${account.employee_id}`}
+                                                              checked={selectedResetTestId === test.id}
+                                                              onChange={() =>
+                                                                setSelectedResetTestByEmployee((prev) => ({ ...prev, [account.employee_id]: test.id }))
+                                                              }
+                                                              aria-label={`Select ${portalTestTitle(test.topicTitle)} for reset`}
+                                                              className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"
+                                                            />
+                                                          )}
+                                                        </td>
                                                         <td className="p-2.5">
                                                           <div className="font-semibold text-slate-800 dark:text-slate-200">{portalTestTitle(test.topicTitle)}</div>
                                                           <div className="text-[9px] text-slate-400 font-medium">{test.subjectTitle}</div>
@@ -7972,7 +8018,7 @@ export default function AdminDashboard() {
                                                       </tr>
                                                       {expandedTestDetails[test.id] && (
                                                         <tr className="bg-white dark:bg-slate-950/60">
-                                                          <td colSpan={7} className="px-4 py-4 border-b border-indigo-50 dark:border-slate-850">
+                                                          <td colSpan={8} className="px-4 py-4 border-b border-indigo-50 dark:border-slate-850">
                                                             {(() => {
                                                               const attemptData = testAttemptDetails[test.id];
                                                               if (attemptData?.loading) {
@@ -9867,7 +9913,7 @@ export default function AdminDashboard() {
 
             <div className="p-6 space-y-4">
               <p className="text-xs text-slate-605 dark:text-slate-300 leading-relaxed font-semibold">
-                Reset the assigned test for{" "}
+                Reset <span className="text-primary font-bold">{resetTargetEmployee.testTitle}</span> for{" "}
                 <span className="text-primary font-bold">{resetTargetEmployee.employeeName}</span>{" "}
                 (Emp ID: <span className="text-primary font-bold">{resetTargetEmployee.employeeId}</span>)?
                 The current attempt is saved in full so they can still review it. They can then retake the live test.

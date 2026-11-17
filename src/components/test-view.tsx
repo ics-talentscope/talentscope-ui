@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, RotateCcw, AlertTriangle, Sparkles, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, Sparkles, Loader2, XCircle } from "lucide-react";
 import { motion } from "framer-motion";
 
 export type ResultReviewItem = {
@@ -28,14 +28,10 @@ function ResultsView(props: {
     topic_title: string;
   };
   videoUploadState?: "pending" | "uploading" | "done" | "failed";
-  onRetake: () => void;
   onGoDashboard: () => void;
   reviewItems?: ResultReviewItem[];
   isArchivedReview?: boolean;
   hideVideoStatus?: boolean;
-  retakeLabel?: string;
-  retakePending?: boolean;
-  retakeError?: string | null;
 }) {
   const { correct = 0, total = 0, accuracy_pct = 0, ai_analysis, topic_title } = props.result;
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -166,18 +162,13 @@ function ResultsView(props: {
       )}
 
       {/* ── Actions ── */}
-      {props.retakeError && (
-        <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
-          {props.retakeError}
+      <div className="space-y-3">
+        <p className="text-center text-xs text-muted-foreground">
+          Need to retake this assessment? Contact your administrator to reset it for you.
         </p>
-      )}
-      <div className="flex gap-3">
-        <Button onClick={props.onRetake} disabled={props.retakePending} className="flex-1 gap-2 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white rounded-xl shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all font-semibold">
-          <RotateCcw className="w-4 h-4" /> {props.retakePending ? "Loading attempt…" : props.retakeLabel ?? (props.isArchivedReview ? "Start new attempt" : "Retake")}
-        </Button>
         <Button
           variant="outline"
-          className="flex-1 rounded-xl border-border text-indigo-700 dark:text-violet-450 hover:bg-secondary font-semibold"
+          className="w-full rounded-xl border-border text-indigo-700 dark:text-violet-450 hover:bg-secondary font-semibold"
           onClick={props.onGoDashboard}
           disabled={videoUploadState === "uploading"}
         >
@@ -188,40 +179,4 @@ function ResultsView(props: {
   );
 }
 
-function ConfirmModal(props: { onConfirm: () => void; onCancel: () => void; message?: string }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-indigo-900/80 backdrop-blur-sm" role="dialog">
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: "spring", stiffness: 200, damping: 15 }}
-        className="bg-card rounded-2xl p-7 max-w-md w-full mx-4 shadow-card space-y-5 border border-border"
-      >
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-100 to-amber-200 dark:from-amber-955/20 dark:to-amber-900/20 flex items-center justify-center flex-shrink-0">
-            <AlertTriangle className="w-5 h-5 text-amber-600" />
-          </div>
-          <div>
-            <h2 className="text-lg font-extrabold text-foreground">Retake this test?</h2>
-            <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
-              {props.message ??
-                "Your previous score and answers will be saved as a previous attempt you can still review. A new attempt will then start."}
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-3 pt-2">
-          <Button variant="outline" className="flex-1 rounded-xl border-border text-primary hover:bg-secondary" onClick={props.onCancel}>
-            Cancel
-          </Button>
-          <Button className="flex-1 bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white gap-1 rounded-xl shadow-md shadow-red-500/25 hover:shadow-lg hover:shadow-red-500/35 transition-all font-semibold" onClick={props.onConfirm}>
-            <RotateCcw className="w-3.5 h-3.5" /> Continue retake
-          </Button>
-        </div>
-      </motion.div>
-      {/* Backdrop click cancels */}
-      <button aria-hidden className="absolute inset-0" onClick={props.onCancel} />
-    </div>
-  );
-}
-
-export { ResultsView, ConfirmModal };
+export { ResultsView };

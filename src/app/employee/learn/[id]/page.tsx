@@ -4,13 +4,20 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { BookOpen, Sparkles, ChevronRight, Clock, Zap, ArrowLeft, AlertCircle, Loader2 } from "lucide-react";
+import { BookOpen, Sparkles, ChevronRight, Clock, Zap, ArrowLeft, AlertCircle, Loader2, ExternalLink } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 type DifficultyLevel = "beginner" | "intermediate" | "advanced" | "expert";
+
+interface TopicSource {
+  name: string;
+  title: string;
+  url: string;
+  description?: string;
+}
 
 interface TopicItem {
   id: string;
@@ -19,6 +26,59 @@ interface TopicItem {
   estimated_minutes: number;
   best_pct?: number;
   attempts?: number;
+  sources?: TopicSource[];
+}
+
+function formatDisplayTitle(raw: string): string {
+  if (!raw) return "Core Concepts";
+  if (!raw.includes("-") && !raw.includes("_")) return raw;
+  const acronyms: Record<string, string> = {
+    ai: "AI",
+    ml: "ML",
+    ds: "Data Science",
+    dl: "Deep Learning",
+    nlp: "NLP",
+    cv: "Computer Vision",
+    genai: "Generative AI",
+    sql: "SQL",
+    llm: "LLM",
+    mlops: "MLOps",
+    bfs: "BFS",
+    dfs: "DFS",
+    "a*": "A*",
+  };
+  return raw
+    .replace(/[-_]+/g, " ")
+    .split(" ")
+    .map((w, idx) => {
+      const lower = w.toLowerCase();
+      if (acronyms[lower]) return acronyms[lower];
+      if (idx > 0 && ["a", "an", "the", "in", "on", "at", "for", "to", "by", "and", "or", "of", "vs"].includes(lower)) {
+        return lower;
+      }
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+function resolveTopicSources(topic: TopicItem, subjectTitle: string): TopicSource[] {
+  if (topic.sources && topic.sources.length >= 2) {
+    return topic.sources.slice(0, 2);
+  }
+  const cleanTitle = formatDisplayTitle(topic.title || "Topic");
+  const slug = cleanTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return [
+    {
+      name: "GeeksforGeeks",
+      title: `${cleanTitle} Tutorial`,
+      url: `https://www.geeksforgeeks.org/${slug}/`,
+    },
+    {
+      name: "Wikipedia",
+      title: cleanTitle,
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(cleanTitle.replace(/ /g, "_"))}`,
+    },
+  ];
 }
 
 interface ModuleItem {
@@ -218,24 +278,36 @@ export default function SubjectDetailPage() {
             </span>
           </h2>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {mod.topics.map((topic, tIdx) => (
-              <motion.div
-                key={topic.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: mIdx * 0.1 + tIdx * 0.05 }}
-              >
-                <Card
-                  className="group flex flex-col gap-3 rounded-2xl border border-border bg-card p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card"
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {mod.topics.map((topic, tIdx) => {
+              const sources = resolveTopicSources(topic, detail.title);
+              return (
+                <motion.div
+                  key={topic.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: mIdx * 0.1 + tIdx * 0.05 }}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-semibold text-foreground leading-snug">{topic.title}</h3>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <Badge variant="outline" className={`text-[10px] border font-semibold ${diffColors[topic.difficulty]}`}>
+                  <Card
+                    className="group flex flex-col justify-between gap-4 rounded-3xl border border-border bg-card p-5 sm:p-6 transition-all duration-200 hover:-translate-y-1 hover:shadow-card h-full"
+                  >
+                    <div>
+                      {/* Top Header: Title on Left, Difficulty Badge on TOP RIGHT */}
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="text-base font-bold text-foreground leading-snug flex-1 min-w-0">
+                          {formatDisplayTitle(topic.title)}
+                        </h3>
+                        {/* Difficulty mentioned at top right */}
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] px-2.5 py-0.5 border font-bold shrink-0 uppercase tracking-wider ${diffColors[topic.difficulty]}`}
+                        >
                           {diffLabels[topic.difficulty]}
                         </Badge>
+                      </div>
+
+                      {/* Metadata badges */}
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground border border-border font-medium">
                           <Clock className="w-2.5 h-2.5" /> {topic.estimated_minutes} min
                         </Badge>
@@ -248,26 +320,61 @@ export default function SubjectDetailPage() {
                           </Badge>
                         )}
                       </div>
-                    </div>
-                  </div>
 
-                  <div className="mt-auto pt-1">
-                    <Button
-                      size="sm"
-                      className="w-full gap-1 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all"
-                      onClick={handleTakeTest(topic.id)}
-                      disabled={startingTopicId !== null}
-                    >
-                      {startingTopicId === topic.id ? (
-                        <><Loader2 className="w-3 h-3 animate-spin" /> Preparing test…</>
-                      ) : (
-                        <><Sparkles className="w-3 h-3" /> Take test →</>
-                      )}
-                    </Button>
-                  </div>
-                </Card>
-              </motion.div>
-            ))}
+                      {/* 2 Learning Sources Links */}
+                      <div className="mt-4 pt-3 border-t border-border/70">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                          <ExternalLink className="w-3 h-3 text-primary" />
+                          <span>2 Learning Sources:</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {sources.slice(0, 2).map((s, sIdx) => (
+                            <a
+                              key={sIdx}
+                              href={s.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              title={s.title || s.name}
+                              className="inline-flex items-center justify-between gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-indigo-50 hover:text-primary dark:bg-slate-800 dark:hover:bg-slate-700/80 transition-colors border border-border group/link"
+                            >
+                              <span className="truncate">{s.name}</span>
+                              <ExternalLink className="w-3 h-3 text-muted-foreground group-hover/link:text-primary shrink-0 opacity-70" />
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="mt-2 pt-3 border-t border-border/50 flex flex-col gap-2">
+                      <Link href={`/employee/learn/${subjectId}/source/${topic.id}`} className="w-full">
+                        <Button
+                          size="sm"
+                          className="w-full gap-1.5 bg-primary hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-500/20 hover:shadow-lg hover:shadow-indigo-500/30 transition-all"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" /> Study Source Guide &amp; Notes →
+                        </Button>
+                      </Link>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full gap-1 text-xs font-semibold rounded-xl border-border hover:bg-slate-100 dark:hover:bg-slate-800 text-muted-foreground hover:text-foreground transition-all"
+                        onClick={handleTakeTest(topic.id)}
+                        disabled={startingTopicId !== null}
+                      >
+                        {startingTopicId === topic.id ? (
+                          <><Loader2 className="w-3 h-3 animate-spin" /> Preparing test…</>
+                        ) : (
+                          <><Sparkles className="w-3 h-3 text-amber-500" /> Quick Take Test</>
+                        )}
+                      </Button>
+                    </div>
+                  </Card>
+                </motion.div>
+              );
+            })}
 
             {mod.topics.length === 0 && (
               <p className="text-sm text-slate-500 font-medium col-span-full">No topics in this module yet.</p>

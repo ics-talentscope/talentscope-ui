@@ -3,8 +3,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ResultsView, ConfirmModal, type ResultReviewItem } from "@/components/test-view";
-import { CheckCircle2, Clock, Flag, XCircle, Zap, ArrowRight, RotateCcw,
+import { ResultsView, type ResultReviewItem } from "@/components/test-view";
+import { CheckCircle2, Clock, Flag, XCircle, Zap, ArrowRight,
   Loader2, AlertTriangle, Send, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
@@ -157,7 +157,7 @@ export default function TestRunnerClient({ testId, bufferOnLoad = false }: { tes
   const router = useRouter();
 
   // ── state ──────────────────────────────────────────────────────
-  type Phase = "loading" | "ready" | "running" | "submitting" | "retake-confirm" | "submitted" | "error";
+  type Phase = "loading" | "ready" | "running" | "submitting" | "submitted" | "error";
   type VideoUploadState = "pending" | "uploading" | "done" | "failed";
 
   const [phase,       setPhase]       = useState<Phase>("loading");
@@ -174,8 +174,6 @@ export default function TestRunnerClient({ testId, bufferOnLoad = false }: { tes
   const [reviewItems, setReviewItems] = useState<ResultReviewItem[]>([]);
   const [isArchivedReview, setIsArchivedReview] = useState(false);
   const [videoUploadState, setVideoUploadState] = useState<VideoUploadState>("pending");
-  const [retakePending, setRetakePending] = useState(false);
-  const [retakeError, setRetakeError] = useState<string | null>(null);
 
   const savedRef     = useRef(false);
   const timerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -817,72 +815,8 @@ export default function TestRunnerClient({ testId, bufferOnLoad = false }: { tes
         reviewItems={reviewItems}
         isArchivedReview={isArchivedReview}
         hideVideoStatus={isArchivedReview}
-        retakeLabel={isArchivedReview ? "Start new attempt" : "Retake"}
-        retakePending={retakePending}
-        retakeError={retakeError}
-        onRetake={async () => {
-          if (isArchivedReview) {
-            setRetakePending(true);
-            setRetakeError(null);
-            try {
-              const response = await fetch("/api/employee/assigned-test", {
-                headers: { Authorization: `Bearer ${token}` },
-                cache: "no-store",
-              });
-              const payload = await response.json().catch(() => null);
-              if (!response.ok) {
-                throw new Error(payload?.error || "Failed to load your assigned assessment.");
-              }
-              const activeTestId = payload?.active_test?.test_id;
-              if (typeof activeTestId !== "string" || !activeTestId) {
-                throw new Error("No active assessment is available to retake. Contact your administrator.");
-              }
-              router.push(`/employee/tests/${activeTestId}`);
-            } catch (error) {
-              setRetakeError(error instanceof Error ? error.message : "Unable to start a new attempt.");
-              setRetakePending(false);
-            }
-            return;
-          }
-          setRetakeError(null);
-          setPhase("retake-confirm");
-          setSubmitted(null);
-          setAnswers({});
-          setCurrentIdx(0);
-          setVideoUploadState("pending");
-        }}
         onGoDashboard={() => window.location.href = "/employee/dashboard"}
       />
-    );
-  }
-
-  // ── phase: retake confirm ───────────────────────────────────────
-  if (phase === "retake-confirm") {
-    return (
-      <div className="max-w-xl mx-auto">
-        <ConfirmModal
-          onConfirm={async () => {
-            try {
-              const res = await fetch(`/api/employee/tests/${testId}`, {
-                method: "DELETE",
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                },
-              });
-              if (res.ok) {
-                window.location.reload();
-                return;
-              }
-            } catch (err) {
-              console.error("Failed to reset test:", err);
-            }
-            submittingRef.current = false;
-            setPhase("ready");
-            setAnswers({}); setCurrentIdx(0); setFlags(new Set()); setErr(null); setMsg(null);
-          }}
-          onCancel={() => setPhase("submitted")}
-        />
-      </div>
     );
   }
 
