@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, ClipboardList, FileText, Sparkles, ShieldAlert, Volume2, Video, Search, Play, Pause, VolumeX, Maximize } from "lucide-react";
+import { ArrowLeft, ClipboardList, FileText, Sparkles, ShieldAlert, Volume2, Video, Search, Play, Pause, VolumeX, Maximize, X } from "lucide-react";
 import AdminAuthGate from "@/components/AdminAuthGate";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
 
@@ -832,8 +832,19 @@ export default function AdminResponseReviewPage() {
                                   placeholder="Search violations..."
                                   value={searchQuery}
                                   onChange={(e) => setSearchQuery(e.target.value)}
-                                  className="w-full bg-slate-50 dark:bg-slate-900 border border-border rounded-xl pl-9 pr-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-violet-500 font-medium text-slate-800 dark:text-slate-200"
+                                  className="w-full bg-slate-50 dark:bg-slate-900 border border-border rounded-xl pl-9 pr-8 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:focus:ring-violet-500 font-medium text-slate-800 dark:text-slate-200"
                                 />
+                                {searchQuery && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSearchQuery("")}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                    aria-label="Clear violations search"
+                                    title="Clear search"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                               </div>
                             </div>
 

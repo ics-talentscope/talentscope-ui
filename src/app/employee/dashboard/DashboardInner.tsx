@@ -34,6 +34,10 @@ const EMPTY_RADAR = [
   { subject: "Cloud", value: 0 },  { subject: "MLOps", value: 0 },
 ];
 
+function displayAssessmentTitle(title: string | null | undefined): string {
+  return String(title || "").replace(/\s+\(previous(?: attempt)?\)$/i, "").trim();
+}
+
 function computeWeeklyAverage(weekStart: string, results: any[]): number {
   const start = new Date(weekStart);
   if (Number.isNaN(start.getTime())) return 0;
@@ -98,11 +102,16 @@ export function DashboardInner() {
     return [...(results || [])].filter(r => r && typeof r === 'object');
   }, [analytics, results]);
 
+  const completedResults = useMemo(
+    () => displayResults.filter((result: any) => result.status === "completed"),
+    [displayResults],
+  );
+
   const displayAnalytics = useMemo(() => {
     if (!analytics) return null;
     
     // Provide safe fallbacks for empty analytics
-    const totalTestsTaken = Math.max(displayResults.length, analytics.total_tests_taken || 0);
+    const totalTestsTaken = Math.max(completedResults.length, analytics.total_tests_taken || 0);
     const averageScore =
       totalTestsTaken > 0 ? (analytics.average_score || 0) : 0;
     const activeBreakdown = (analytics.subject_breakdown ?? []).filter(
@@ -115,7 +124,7 @@ export function DashboardInner() {
               averageScore,
               totalTestsTaken,
               subjectBreakdown: activeBreakdown,
-              testScores: displayResults.map((result: any) => result.accuracy_pct ?? 0),
+              testScores: completedResults.map((result: any) => result.accuracy_pct ?? 0),
             }))
         : 0;
 
@@ -139,7 +148,7 @@ export function DashboardInner() {
     if (!merged.subject_breakdown) merged.subject_breakdown = [];
 
     return merged;
-  }, [analytics, displayResults]);
+  }, [analytics, completedResults, displayResults]);
 
   const activeSubjectBreakdown = useMemo(() => {
     return (displayAnalytics?.subject_breakdown ?? []).filter(
@@ -153,16 +162,16 @@ export function DashboardInner() {
     const fromBreakdown = buildRadarDataFromBreakdown(activeSubjectBreakdown);
     if (fromBreakdown.some((d) => d.value > 0)) return fromBreakdown;
 
-    return buildRadarDataFromResults(displayResults);
-  }, [displayAnalytics, activeSubjectBreakdown, displayResults]);
+    return buildRadarDataFromResults(completedResults);
+  }, [displayAnalytics, activeSubjectBreakdown, completedResults]);
 
   const hasSubjectMasteryData = useMemo(() => {
     return radarData.some((d) => d.value > 0);
   }, [radarData]);
 
   const trendData = useMemo(() => {
-    const source = displayResults.length
-      ? displayResults.map((result: any) => ({
+    const source = completedResults.length
+      ? completedResults.map((result: any) => ({
           date: result.completed_at,
           score: result.accuracy_pct ?? 0,
         }))
@@ -183,7 +192,7 @@ export function DashboardInner() {
           score: typeof h.score === "number" ? h.score : 0,
         };
       });
-  }, [displayAnalytics, displayResults]);
+  }, [displayAnalytics, completedResults]);
 
   const weekData = useMemo(() => {
     if (!displayAnalytics?.weekly_activity) return [];
@@ -199,7 +208,7 @@ export function DashboardInner() {
             }
           } catch (e) {}
         }
-        const avgFromResults = computeWeeklyAverage(w.week_start, displayResults);
+        const avgFromResults = computeWeeklyAverage(w.week_start, completedResults);
         const avgScore =
           typeof w.avg_score === "number" && w.avg_score > 0
             ? Math.round(w.avg_score)
@@ -211,7 +220,7 @@ export function DashboardInner() {
           avg: avgScore,
         };
       });
-  }, [displayAnalytics, displayResults]);
+  }, [displayAnalytics, completedResults]);
 
   const recentResults = useMemo(() => {
     const items = (displayResults ?? []).filter((r) => r && typeof r === "object");
@@ -295,9 +304,9 @@ export function DashboardInner() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                  {assignedTest ? "Previous attempt" : "Assessment Completed"}
+                  Assessment Completed
                 </p>
-                <h2 className="mt-1 text-xl font-bold text-foreground">{completedAssessment.topic_title}</h2>
+                <h2 className="mt-1 text-xl font-bold text-foreground">{displayAssessmentTitle(completedAssessment.topic_title)}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Score: {completedAssessment.score_correct}/{completedAssessment.total_questions} (
                   {completedAssessment.score_percent}%)
@@ -307,7 +316,7 @@ export function DashboardInner() {
                 </p>
                 <p className="mt-2 text-xs text-muted-foreground">
                   {assignedTest
-                    ? "Your earlier attempt is kept in full. You can review it and still start a new attempt below."
+                    ? "This completed assessment is available to review."
                     : "Contact your administrator if you need to retake this assessment."}
                 </p>
               </div>
@@ -329,7 +338,7 @@ export function DashboardInner() {
                 <p className="text-xs font-bold uppercase tracking-wider text-primary">
                   {completedAssessment ? "New attempt" : "Assigned Product Assessment"}
                 </p>
-                <h2 className="mt-1 text-xl font-bold text-foreground">{assignedTest.topic_title}</h2>
+                <h2 className="mt-1 text-xl font-bold text-foreground">{displayAssessmentTitle(assignedTest.topic_title)}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {assignedTest.total_questions} questions ·{" "}
                   {assignedTest.status === "in_progress"
@@ -470,17 +479,25 @@ export function DashboardInner() {
                 <Card key={r.id} className="p-5 bg-card border border-indigo-100 dark:border-slate-850 hover:border-indigo-400 dark:hover:border-indigo-800 hover:shadow-card transition-all duration-200 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <h3 className="font-semibold text-sm text-foreground truncate">{r.topic_title}</h3>
+                      <h3 className="font-semibold text-sm text-foreground truncate">{displayAssessmentTitle(r.topic_title)}</h3>
                       <p className="text-xs text-muted-foreground">{r.subject_title}</p>
                     </div>
-                    <ScorePill pct={r.accuracy_pct} />
+                    {r.status === "completed" ? <ScorePill pct={r.accuracy_pct} /> : (
+                      <Badge variant="outline" className="shrink-0 text-[10px]">Incomplete · archived</Badge>
+                    )}
                   </div>
                   <div className="rounded-lg bg-secondary/60 px-3 py-2">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Score</p>
-                    <p className="text-lg font-extrabold text-foreground">
-                      {r.correct_answers}/{r.total_questions}
-                      <span className="ml-1 text-sm font-semibold text-muted-foreground">({r.accuracy_pct}%)</span>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                      {r.status === "completed" ? "Score" : "Assessment status"}
                     </p>
+                    {r.status === "completed" ? (
+                      <p className="text-lg font-extrabold text-foreground">
+                        {r.correct_answers}/{r.total_questions}
+                        <span className="ml-1 text-sm font-semibold text-muted-foreground">({r.accuracy_pct}%)</span>
+                      </p>
+                    ) : (
+                      <p className="text-sm font-semibold text-muted-foreground">No score — not completed</p>
+                    )}
                   </div>
                   {r.ai_analysis && typeof r.ai_analysis === "string" && (
                     <p className="text-xs text-muted-foreground line-clamp-3 leading-relaxed">{r.ai_analysis}</p>
@@ -488,16 +505,18 @@ export function DashboardInner() {
                   <div className="flex items-center justify-between gap-2 pt-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="outline" className="text-[10px] uppercase tracking-wider dark:border-slate-800 dark:text-slate-300">{r.difficulty}</Badge>
-                      <span>{toDateStr(r.completed_at)}</span>
+                      <span>{r.completed_at ? toDateStr(r.completed_at) : "Not completed"}</span>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-8 rounded-lg text-xs font-bold shrink-0"
-                      onClick={() => router.push(`/employee/tests/${r.id}`)}
-                    >
-                      Review
-                    </Button>
+                    {r.status === "completed" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 rounded-lg text-xs font-bold shrink-0"
+                        onClick={() => router.push(`/employee/tests/${r.id}`)}
+                      >
+                        Review
+                      </Button>
+                    )}
                   </div>
                 </Card>
               ))}

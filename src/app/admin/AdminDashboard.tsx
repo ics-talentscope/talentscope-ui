@@ -439,6 +439,10 @@ function portalPrimaryCompletedAt(account: {
   return primary?.completedAt ?? null;
 }
 
+function portalTestTitle(title: string | null | undefined): string {
+  return String(title || "").replace(/\s+\(previous(?: attempt)?\)$/i, "").trim();
+}
+
 function formatPortalCompletedAt(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
@@ -1380,6 +1384,7 @@ export default function AdminDashboard() {
   const [portalCompletedDateOpen, setPortalCompletedDateOpen] = useState(false);
   const portalCompletedDateRef = useRef<HTMLDivElement | null>(null);
   const [expandedEmployees, setExpandedEmployees] = useState<Record<string, boolean>>({});
+  const [expandedTestDetails, setExpandedTestDetails] = useState<Record<string, boolean>>({});
   const [expandedProctorFlags, setExpandedProctorFlags] = useState<Record<string, boolean>>({});
   const [testAttemptDetails, setTestAttemptDetails] = useState<
     Record<
@@ -1399,9 +1404,6 @@ export default function AdminDashboard() {
       }
     >
   >({});
-  const [assignedQuestionsByEmployee, setAssignedQuestionsByEmployee] = useState<
-    Record<string, { loading: boolean; questions: string[]; error?: string }>
-  >({});
   const [emails, setEmails] = useState<any[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<any>(null);
   const [showEmailModal, setShowEmailModal] = useState(false);
@@ -1419,11 +1421,6 @@ export default function AdminDashboard() {
   const [isDispatchingMails, setIsDispatchingMails] = useState(false);
   const [portalMailSendingId, setPortalMailSendingId] = useState<string | null>(null);
   const [isBulkPortalMailing, setIsBulkPortalMailing] = useState(false);
-  const [isBulkPortalDownloading, setIsBulkPortalDownloading] = useState(false);
-  const [bulkPortalDownloadProgress, setBulkPortalDownloadProgress] = useState<{
-    current: number;
-    total: number;
-  } | null>(null);
   const [activeEmployee, setActiveEmployee] = useState<any>(null);
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [employeeSearch, setEmployeeSearch] = useState("");
@@ -2007,40 +2004,6 @@ export default function AdminDashboard() {
     }
   }, [authenticated, adminEmail, selectedJdId, loadEmployees]);
 
-  const loadAssignedQuestions = async (employeeId: string) => {
-    let shouldFetch = true;
-    setAssignedQuestionsByEmployee((prev) => {
-      const cached = prev[employeeId];
-      if (cached?.loading || (cached?.questions?.length && !cached.error)) {
-        shouldFetch = false;
-        return prev;
-      }
-      return {
-        ...prev,
-        [employeeId]: { loading: true, questions: prev[employeeId]?.questions ?? [] },
-      };
-    });
-    if (!shouldFetch) return;
-
-    try {
-      const res = await fetch(
-        `/api/admin/employees/mapping-questions?employeeId=${encodeURIComponent(employeeId)}`
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to load assigned questions");
-
-      setAssignedQuestionsByEmployee((prev) => ({
-        ...prev,
-        [employeeId]: { loading: false, questions: data.assigned_questions ?? [] },
-      }));
-    } catch (err: any) {
-      setAssignedQuestionsByEmployee((prev) => ({
-        ...prev,
-        [employeeId]: { loading: false, questions: [], error: err.message },
-      }));
-    }
-  };
-
   const loadTestAttemptDetails = async (testId: string) => {
     let shouldFetch = true;
     setTestAttemptDetails((prev) => {
@@ -2072,27 +2035,6 @@ export default function AdminDashboard() {
       }));
     }
   };
-
-  useEffect(() => {
-    for (const account of resourcePortalEmployees) {
-      if (expandedEmployees[account.employee_id]) {
-        if (
-          !(account.assigned_questions?.length) &&
-          !assignedQuestionsByEmployee[account.employee_id]?.questions?.length
-        ) {
-          loadAssignedQuestions(account.employee_id);
-        }
-        if (
-          account.test_status === "completed"
-        ) {
-          const completedTestId =
-            account.tests?.find((test: any) => test.status === "completed")?.id ??
-            account.test_id;
-          if (completedTestId) loadTestAttemptDetails(completedTestId);
-        }
-      }
-    }
-  }, [expandedEmployees, resourcePortalEmployees]);
 
   const isDashboardBootstrapping = !dashboardReady;
   const isEmployeeDataPending =
@@ -2342,19 +2284,6 @@ export default function AdminDashboard() {
     setPortalCompletedDateMenu({ type: "root" });
   };
 
-  const selectedPortalVideoTargets = useMemo(() => {
-    return selectedPortalEmployeeIds
-      .map((id) => {
-        const account = resourcePortalEmployees.find((entry) => entry.employee_id === id);
-        if (!account) return null;
-        const videoTest = portalVideoTest(account);
-        return videoTest?.hasVideo
-          ? { employeeId: id, testId: videoTest.testId }
-          : null;
-      })
-      .filter(Boolean) as Array<{ employeeId: string; testId: string }>;
-  }, [selectedPortalEmployeeIds, resourcePortalEmployees]);
-
   const handleTogglePortalEmployeeSelect = (id: string) => {
     setSelectedPortalEmployeeIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -2373,80 +2302,11 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleBulkDeletePortalVideos = () => {
-    if (selectedPortalVideoTargets.length === 0) return;
-    setDeleteTargetId("bulk-portal-videos");
+  const handleBulkDeletePortalEmployees = () => {
+    if (selectedPortalEmployeeIds.length === 0) return;
+    setDeleteTargetId("bulk-portal-employees");
     setDeletePasswordInput("");
     setDeleteModalError(null);
-  };
-
-  const handleBulkDownloadPortalVideos = async () => {
-    if (selectedPortalVideoTargets.length === 0 || isBulkPortalDownloading) return;
-    setIsBulkPortalDownloading(true);
-    setBulkPortalDownloadProgress({ current: 0, total: selectedPortalVideoTargets.length });
-    setActionError(null);
-    setActionSuccess(null);
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = new JSZip();
-      const usedNames = new Set<string>();
-      let downloaded = 0;
-      let skipped = 0;
-
-      for (const target of selectedPortalVideoTargets) {
-        const account = resourcePortalEmployees.find(
-          (entry) => entry.employee_id === target.employeeId
-        );
-        const employeeName = account ? portalEmployeeName(account) : target.employeeId;
-        try {
-          const { blob, fileName } = await fetchTestVideoBlob(
-            target.testId,
-            target.employeeId,
-            employeeName
-          );
-          let uniqueName = fileName;
-          if (usedNames.has(uniqueName)) {
-            const base = fileName.replace(/\.webm$/i, "");
-            uniqueName = `${base}-${sanitizeDownloadPart(target.testId) || "test"}.webm`;
-          }
-          usedNames.add(uniqueName);
-          zip.file(uniqueName, blob);
-          downloaded += 1;
-        } catch {
-          skipped += 1;
-        }
-        setBulkPortalDownloadProgress({
-          current: downloaded + skipped,
-          total: selectedPortalVideoTargets.length,
-        });
-      }
-
-      if (downloaded === 0) {
-        throw new Error("Could not download any selected recordings.");
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `employee_portal_videos_${new Date().toISOString().split("T")[0]}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      setActionSuccess(
-        skipped > 0
-          ? `Downloaded ${downloaded} video(s) as a ZIP. ${skipped} skipped (no recording or not found). Open WebM files in Chrome/Edge or VLC.`
-          : `Downloaded ${downloaded} video(s) as a ZIP. Open WebM files in Chrome/Edge or VLC — Windows Media Player does not support WebM.`
-      );
-      setTimeout(() => setActionSuccess(null), 5000);
-    } catch (err: any) {
-      setActionError(err.message || "Failed to download selected videos.");
-    } finally {
-      setIsBulkPortalDownloading(false);
-      setBulkPortalDownloadProgress(null);
-    }
   };
 
   const buildPortalMailRecipients = (employeeIds: string[]) => {
@@ -4904,36 +4764,24 @@ export default function AdminDashboard() {
       return;
     }
 
-    if (targetId === "bulk-portal-videos") {
-      setActionLoading("bulk-portal-videos");
+    if (targetId === "bulk-portal-employees") {
+      setActionLoading("bulk-portal-employees");
       setActionError(null);
       try {
-        const response = await fetch("/api/admin/employees/delete-video", {
-          method: "POST",
+        const idsToDelete = [...selectedPortalEmployeeIds];
+        const response = await fetch("/api/admin/employees/portal", {
+          method: "DELETE",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: selectedPortalVideoTargets }),
+          body: JSON.stringify({ employeeIds: idsToDelete }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to delete proctoring videos");
-
-        const deletedCount = data.deletedCount ?? selectedPortalVideoTargets.length;
-        const skippedCount = data.skippedCount ?? 0;
-        setActionSuccess(
-          skippedCount > 0
-            ? `${deletedCount} proctoring video(s) deleted. ${skippedCount} skipped (no recording or not found).`
-            : `${deletedCount} proctoring video(s) deleted successfully. Scores and test status unchanged.`
-        );
+        if (!response.ok) throw new Error(data.error || "Failed to delete selected employees");
+        setActionSuccess(`${data.deleted} employee portal account(s) and linked data deleted successfully.`);
         setSelectedPortalEmployeeIds([]);
         setTimeout(() => setActionSuccess(null), 4000);
-        if (videoPreview?.testId && selectedPortalVideoTargets.some((item) => item.testId === videoPreview.testId)) {
-          if (videoPreview.url?.startsWith("blob:")) {
-            URL.revokeObjectURL(videoPreview.url);
-          }
-          setVideoPreview(null);
-        }
         await loadEmployees({ fresh: true });
       } catch (error: any) {
-        setActionError(error.message || "Failed to delete proctoring videos.");
+        setActionError(error.message || "Failed to delete selected employees.");
       } finally {
         setActionLoading(null);
       }
@@ -6123,13 +5971,30 @@ export default function AdminDashboard() {
                           setRequirementPage(1);
                         }}
                       >
-                        <input
-                          type="text"
-                          placeholder="Search Requirements (BR / JD)..."
-                          value={requirementSearchDraft}
-                          onChange={(e) => setRequirementSearchDraft(e.target.value)}
-                          className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                        />
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            type="text"
+                            placeholder="Search Requirements (BR / JD)..."
+                            value={requirementSearchDraft}
+                            onChange={(e) => setRequirementSearchDraft(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                          />
+                          {(requirementSearchDraft || requirementSearch) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRequirementSearch("");
+                                setRequirementSearchDraft("");
+                                setRequirementPage(1);
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                              aria-label="Clear requirements search"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                         <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
                           Search
                         </Button>
@@ -7594,15 +7459,12 @@ export default function AdminDashboard() {
                         <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
                           {selectedPortalEmployeeIds.length} employee
                           {selectedPortalEmployeeIds.length > 1 ? "s" : ""} selected
-                          {selectedPortalVideoTargets.length > 0
-                            ? ` · ${selectedPortalVideoTargets.length} with recording`
-                            : " · none with a recording"}
                         </span>
                         <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={isBulkPortalMailing || isBulkPortalDownloading}
+                          disabled={isBulkPortalMailing}
                           onClick={handleBulkSendPortalEmployeeMails}
                           className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 border-border text-primary hover:bg-secondary"
                         >
@@ -7617,46 +7479,22 @@ export default function AdminDashboard() {
                           )}
                         </Button>
                         <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={
-                            isBulkPortalDownloading ||
-                            selectedPortalVideoTargets.length === 0
-                          }
-                          onClick={handleBulkDownloadPortalVideos}
-                          className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 border-border text-primary hover:bg-secondary"
-                        >
-                          {isBulkPortalDownloading ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              {bulkPortalDownloadProgress
-                                ? `Downloading ${bulkPortalDownloadProgress.current}/${bulkPortalDownloadProgress.total}...`
-                                : "Downloading..."}
-                            </>
-                          ) : (
-                            <>
-                              <Download className="w-3.5 h-3.5" /> Download Selected Videos
-                            </>
-                          )}
-                        </Button>
-                        <Button
                           variant="destructive"
                           size="sm"
                           disabled={
-                            actionLoading === "bulk-portal-videos" ||
-                            isBulkPortalDownloading ||
-                            selectedPortalVideoTargets.length === 0
+                            actionLoading === "bulk-portal-employees" ||
+                            selectedPortalEmployeeIds.length === 0
                           }
-                          onClick={handleBulkDeletePortalVideos}
+                          onClick={handleBulkDeletePortalEmployees}
                           className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 bg-red-600 hover:bg-red-700 text-white shadow-sm shadow-red-500/25"
                         >
-                          {actionLoading === "bulk-portal-videos" ? (
+                          {actionLoading === "bulk-portal-employees" ? (
                             <>
                               <Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting...
                             </>
                           ) : (
                             <>
-                              <Trash2 className="w-3.5 h-3.5" /> Delete Selected Videos
+                              <Trash2 className="w-3.5 h-3.5" /> Delete Selected Employees
                             </>
                           )}
                         </Button>
@@ -8022,129 +7860,6 @@ export default function AdminDashboard() {
                                                 Remarks: {account.remarks}
                                               </p>
                                             )}
-                                            <div>
-                                              {(() => {
-                                                const lazyAssigned = assignedQuestionsByEmployee[account.employee_id];
-                                                const assignedQuestionsList =
-                                                  account.assigned_questions?.length
-                                                    ? account.assigned_questions
-                                                    : lazyAssigned?.questions ?? [];
-                                                const assignedCount =
-                                                  assignedQuestionsList.length ||
-                                                  Number(account.assigned_question_count || 0);
-
-                                                let body: React.ReactNode;
-                                                if (!assignedQuestionsList.length && lazyAssigned?.loading) {
-                                                  body = (
-                                                    <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
-                                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                      Loading assigned questions...
-                                                    </div>
-                                                  );
-                                                } else if (account.test_status === "completed") {
-                                                  const completedTestId =
-                                                    account.tests?.find((test: any) => test.status === "completed")?.id ??
-                                                    account.test_id;
-                                                  const attemptData = completedTestId
-                                                    ? testAttemptDetails[completedTestId]
-                                                    : undefined;
-                                                  if (attemptData?.loading) {
-                                                    body = (
-                                                      <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
-                                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                        Loading submitted answers...
-                                                      </div>
-                                                    );
-                                                  } else if (attemptData?.questions?.length) {
-                                                    body = (
-                                                      <ol className="list-decimal pl-5 space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
-                                                        {attemptData.questions.map((q) => (
-                                                          <li key={q.question_index} className="space-y-1">
-                                                            <div>{q.question_text}</div>
-                                                            <div className="pl-1 space-y-0.5">
-                                                              {q.selected_option_text ? (
-                                                                <div
-                                                                  className={`font-semibold ${
-                                                                    q.is_correct
-                                                                      ? "text-emerald-600 dark:text-emerald-400"
-                                                                      : "text-rose-600 dark:text-rose-400"
-                                                                  }`}
-                                                                >
-                                                                  Selected: {q.selected_option_text}
-                                                                  {q.is_correct === false
-                                                                    ? " (Incorrect)"
-                                                                    : q.is_correct
-                                                                      ? " (Correct)"
-                                                                      : ""}
-                                                                </div>
-                                                              ) : (
-                                                                <div className="text-slate-400 font-medium italic">
-                                                                  Not answered
-                                                                </div>
-                                                              )}
-                                                              {q.submitted_at && (
-                                                                <div className="text-[10px] text-slate-400 font-medium">
-                                                                  Submitted: {formatPortalTimestamp(q.submitted_at)}
-                                                                </div>
-                                                              )}
-                                                            </div>
-                                                          </li>
-                                                        ))}
-                                                      </ol>
-                                                    );
-                                                  } else if (attemptData?.error) {
-                                                    body = (
-                                                      <p className="text-[11px] text-rose-500 font-medium">
-                                                        Could not load answers: {attemptData.error}
-                                                      </p>
-                                                    );
-                                                  } else if (assignedQuestionsList.length > 0) {
-                                                    body = (
-                                                      <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                                                        {assignedQuestionsList.map((q: string, idx: number) => (
-                                                          <li key={idx}>{q}</li>
-                                                        ))}
-                                                      </ol>
-                                                    );
-                                                  } else {
-                                                    body = (
-                                                      <p className="text-[11px] text-slate-400 font-medium italic">
-                                                        No assigned question text found for this employee.
-                                                      </p>
-                                                    );
-                                                  }
-                                                } else if (assignedQuestionsList.length > 0) {
-                                                  body = (
-                                                    <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                                                      {assignedQuestionsList.map((q: string, idx: number) => (
-                                                        <li key={idx}>{q}</li>
-                                                      ))}
-                                                    </ol>
-                                                  );
-                                                } else if (lazyAssigned?.error) {
-                                                  body = (
-                                                    <p className="text-[11px] text-rose-500 font-medium">
-                                                      Could not load assigned questions: {lazyAssigned.error}
-                                                    </p>
-                                                  );
-                                                } else {
-                                                  body = (
-                                                    <p className="text-[11px] text-slate-400 font-medium italic">
-                                                      No assigned question text found for this employee.
-                                                    </p>
-                                                  );
-                                                }
-
-                                                return (
-                                                  <>
-                                                    <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-                                                      Assigned Questions ({assignedCount})
-                                                    </h4>
-                                                    {body}
-                                                  </>
-                                                );
-                                              })()}
-                                            </div>
                                             {account.tests?.length > 0 && (
                                               <div className="border border-indigo-50 dark:border-slate-850 rounded-xl overflow-hidden bg-white dark:bg-slate-950 shadow-inner">
                                                 <table className="w-full text-left border-collapse text-xs">
@@ -8161,10 +7876,25 @@ export default function AdminDashboard() {
                                                   </thead>
                                                   <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-850/50">
                                                     {account.tests.map((test: any) => (
-                                                      <tr key={test.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-900/20">
+                                                      <React.Fragment key={test.id}>
+                                                      <tr className="hover:bg-slate-50/30 dark:hover:bg-slate-900/20">
                                                         <td className="p-2.5">
-                                                          <div className="font-semibold text-slate-800 dark:text-slate-200">{test.topicTitle}</div>
+                                                          <div className="font-semibold text-slate-800 dark:text-slate-200">{portalTestTitle(test.topicTitle)}</div>
                                                           <div className="text-[9px] text-slate-400 font-medium">{test.subjectTitle}</div>
+                                                          <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="outline"
+                                                            className="mt-1 h-7 rounded-md px-2 text-[9px] font-bold"
+                                                            aria-expanded={Boolean(expandedTestDetails[test.id])}
+                                                            onClick={() => {
+                                                              const willExpand = !expandedTestDetails[test.id];
+                                                              setExpandedTestDetails((prev) => ({ ...prev, [test.id]: willExpand }));
+                                                              if (willExpand) void loadTestAttemptDetails(test.id);
+                                                            }}
+                                                          >
+                                                            {expandedTestDetails[test.id] ? "Hide Details" : "Show Details"}
+                                                          </Button>
                                                         </td>
                                                         <td className="p-2.5 capitalize text-slate-600 dark:text-slate-400 font-medium">{test.difficulty}</td>
                                                         <td className="p-2.5 text-slate-500 font-medium">{test.totalQuestions} Qs</td>
@@ -8225,70 +7955,118 @@ export default function AdminDashboard() {
                                                           </Badge>
                                                         </td>
                                                         <td className="p-2.5 text-slate-550 font-medium">
-                                                          {test.completedAt
-                                                            ? new Date(test.completedAt).toLocaleString()
-                                                            : (test.startedAt ? `Started ${new Date(test.startedAt).toLocaleString()}` : "—")}
+                                                          <div>
+                                                            Assigned: {test.createdAt ? new Date(test.createdAt).toLocaleString() : "—"}
+                                                          </div>
+                                                          {test.startedAt && (
+                                                            <div className="mt-0.5 text-[10px] text-slate-400">
+                                                              Started: {new Date(test.startedAt).toLocaleString()}
+                                                            </div>
+                                                          )}
+                                                          {test.completedAt && (
+                                                            <div className="mt-0.5 text-[10px] text-slate-400">
+                                                              Completed: {new Date(test.completedAt).toLocaleString()}
+                                                            </div>
+                                                          )}
                                                         </td>
                                                       </tr>
+                                                      {expandedTestDetails[test.id] && (
+                                                        <tr className="bg-white dark:bg-slate-950/60">
+                                                          <td colSpan={7} className="px-4 py-4 border-b border-indigo-50 dark:border-slate-850">
+                                                            {(() => {
+                                                              const attemptData = testAttemptDetails[test.id];
+                                                              if (attemptData?.loading) {
+                                                                return (
+                                                                  <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    Loading assigned questions and answers...
+                                                                  </div>
+                                                                );
+                                                              }
+                                                              if (attemptData?.error) {
+                                                                return (
+                                                                  <p className="text-[11px] text-rose-500 font-medium">
+                                                                    Could not load test details: {attemptData.error}
+                                                                  </p>
+                                                                );
+                                                              }
+                                                              if (!attemptData?.questions?.length) {
+                                                                return (
+                                                                  <p className="text-[11px] text-slate-400 italic">
+                                                                    No questions were found for this test.
+                                                                  </p>
+                                                                );
+                                                              }
+                                                              return (
+                                                                <div className="space-y-4">
+                                                                  <section>
+                                                                    <h4 className="mb-2 font-extrabold text-[11px] uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                                                                      Assigned Questions and Answers
+                                                                    </h4>
+                                                                    <ol className="list-decimal pl-5 space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
+                                                                      {attemptData.questions.map((q) => (
+                                                                        <li key={q.question_index} className="space-y-1">
+                                                                          <div>{q.question_text}</div>
+                                                                          <div className="pl-1">
+                                                                            {q.selected_option_text ? (
+                                                                              <span className={`font-semibold ${q.is_correct ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                                                                Answer: {q.selected_option_text}
+                                                                                {q.is_correct === false ? " (Incorrect)" : q.is_correct ? " (Correct)" : ""}
+                                                                              </span>
+                                                                            ) : (
+                                                                              <span className="text-slate-400 font-medium italic">No answer submitted</span>
+                                                                            )}
+                                                                            {q.submitted_at && (
+                                                                              <div className="mt-0.5 text-[10px] text-slate-400">
+                                                                                Submitted: {formatPortalTimestamp(q.submitted_at)}
+                                                                              </div>
+                                                                            )}
+                                                                          </div>
+                                                                        </li>
+                                                                      ))}
+                                                                    </ol>
+                                                                  </section>
+                                                                  <section className="border-t border-border pt-3">
+                                                                    <h4 className="mb-2 font-extrabold text-[11px] uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                                                                      Proctoring Anomalies
+                                                                    </h4>
+                                                                    {test.proctoring?.violations?.length ? (
+                                                                      <div className="overflow-x-auto rounded-lg border border-amber-100 dark:border-amber-950/40">
+                                                                        <table className="w-full text-left border-collapse text-xs">
+                                                                          <thead>
+                                                                            <tr className="bg-amber-50/70 dark:bg-amber-950/20 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
+                                                                              <th className="p-2">Timestamp</th>
+                                                                              <th className="p-2">Anomaly</th>
+                                                                              <th className="p-2">Category</th>
+                                                                              <th className="p-2">Severity</th>
+                                                                              <th className="p-2">Detail</th>
+                                                                            </tr>
+                                                                          </thead>
+                                                                          <tbody className="divide-y divide-border">
+                                                                            {test.proctoring.violations.map((v: any, idx: number) => (
+                                                                              <tr key={`${test.id}-${idx}-${v.timestamp || idx}`}>
+                                                                                <td className="p-2 whitespace-nowrap">{formatPortalTimestamp(v.timestamp) || "—"}</td>
+                                                                                <td className="p-2 font-semibold">{v.type}</td>
+                                                                                <td className="p-2 capitalize">{v.category || "—"}</td>
+                                                                                <td className="p-2 capitalize">{v.severity || "low"}</td>
+                                                                                <td className="p-2">{v.detail || "—"}</td>
+                                                                              </tr>
+                                                                            ))}
+                                                                          </tbody>
+                                                                        </table>
+                                                                      </div>
+                                                                    ) : (
+                                                                      <p className="text-[11px] text-slate-400 italic">No anomalies recorded for this test.</p>
+                                                                    )}
+                                                                  </section>
+                                                                </div>
+                                                              );
+                                                            })()}
+                                                          </td>
+                                                        </tr>
+                                                      )}
+                                                      </React.Fragment>
                                                     ))}
-                                                  </tbody>
-                                                </table>
-                                              </div>
-                                            )}
-                                            {account.tests?.some((t: any) => (t.proctoring?.violations || []).length > 0) && (
-                                              <div className="border border-amber-100 dark:border-amber-950/40 rounded-xl overflow-hidden bg-white dark:bg-slate-950 shadow-inner">
-                                                <div className="px-3 py-2 bg-amber-50/80 dark:bg-amber-950/20 border-b border-amber-100 dark:border-amber-950/40">
-                                                  <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-amber-800 dark:text-amber-300">
-                                                    Proctoring Anomalies (with timestamps)
-                                                  </h4>
-                                                  <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 mt-0.5">
-                                                    Face / attention / browser events recorded during the assessment (IST).
-                                                  </p>
-                                                </div>
-                                                <table className="w-full text-left border-collapse text-xs">
-                                                  <thead>
-                                                    <tr className="bg-slate-50 dark:bg-slate-900 border-b border-indigo-50 dark:border-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
-                                                      <th className="p-2.5">Timestamp</th>
-                                                      <th className="p-2.5">Anomaly</th>
-                                                      <th className="p-2.5">Category</th>
-                                                      <th className="p-2.5">Severity</th>
-                                                      <th className="p-2.5">Detail</th>
-                                                    </tr>
-                                                  </thead>
-                                                  <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-850/50">
-                                                    {account.tests.flatMap((test: any) =>
-                                                      (test.proctoring?.violations || []).map(
-                                                        (v: any, idx: number) => (
-                                                          <tr key={`${test.id}-${idx}-${v.timestamp || idx}`}>
-                                                            <td className="p-2.5 whitespace-nowrap font-medium text-slate-700 dark:text-slate-300">
-                                                              {formatPortalTimestamp(v.timestamp) || "—"}
-                                                            </td>
-                                                            <td className="p-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                                                              {v.type}
-                                                            </td>
-                                                            <td className="p-2.5 capitalize text-slate-500">
-                                                              {v.category || "—"}
-                                                            </td>
-                                                            <td className="p-2.5">
-                                                              <span
-                                                                className={`inline-flex rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
-                                                                  v.severity === "high"
-                                                                    ? "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300"
-                                                                    : v.severity === "medium"
-                                                                      ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                                                                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                                                                }`}
-                                                              >
-                                                                {v.severity || "low"}
-                                                              </span>
-                                                            </td>
-                                                            <td className="p-2.5 text-slate-500">
-                                                              {v.detail || "—"}
-                                                            </td>
-                                                          </tr>
-                                                        )
-                                                      )
-                                                    )}
                                                   </tbody>
                                                 </table>
                                               </div>
@@ -8379,13 +8157,30 @@ export default function AdminDashboard() {
                           setOutboxPage(1);
                         }}
                       >
-                        <input
-                          type="text"
-                          placeholder="Search Email Outbox..."
-                          value={outboxSearchDraft}
-                          onChange={(e) => setOutboxSearchDraft(e.target.value)}
-                          className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                        />
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            type="text"
+                            placeholder="Search Email Outbox..."
+                            value={outboxSearchDraft}
+                            onChange={(e) => setOutboxSearchDraft(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                          />
+                          {(outboxSearchDraft || outboxSearch) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOutboxSearch("");
+                                setOutboxSearchDraft("");
+                                setOutboxPage(1);
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                              aria-label="Clear email outbox search"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                         <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
                           Search
                         </Button>
@@ -8456,7 +8251,7 @@ export default function AdminDashboard() {
                             return (
                             <Card
                               key={email.id}
-                              className={`p-4 border-border bg-card/60 hover:border-indigo-300 dark:hover:border-slate-700 hover:shadow-soft transition-all duration-300 flex items-start gap-3 ${
+                              className={`p-2.5 border-border bg-card/60 hover:border-indigo-300 dark:hover:border-slate-700 hover:shadow-soft transition-all duration-200 flex items-start gap-2 ${
                                 selectedEmailIds.includes(email.id) ? "border-indigo-400 dark:border-indigo-800 bg-indigo-50/10 dark:bg-indigo-950/10" : ""
                               }`}
                             >
@@ -8466,38 +8261,41 @@ export default function AdminDashboard() {
                               onChange={() => handleToggleEmailSelect(email.id)}
                               className="mt-1 w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 cursor-pointer"
                             />
-                            <div className="flex-1 flex flex-col gap-3">
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="space-y-1">
-                                  <h4 className="font-black text-foreground text-sm flex items-center gap-1.5">
+                            <div className="flex-1 flex flex-col gap-2">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-0.5">
+                                  <h4 className="font-black text-foreground text-xs flex items-center gap-1.5">
                                     {email.fullName}
                                     {(() => {
                                       const badge = outboxStatusBadge(email.status);
                                       return (
-                                        <Badge className={`${badge.className} font-bold text-[9px] px-2 py-0.5`}>
+                                        <Badge className={`${badge.className} font-bold text-[8px] px-1.5 py-0`}>
                                           {badge.label}
                                         </Badge>
                                       );
                                     })()}
                                   </h4>
-                                  <div className="text-xs text-muted-foreground font-semibold">
+                                  <div className="text-[10px] text-muted-foreground font-semibold">
                                     To: <span className="text-primary font-bold">{email.to}</span>
                                   </div>
-                                  <div className="text-[11px] text-muted-foreground font-medium italic">
+                                  <div className="truncate text-[10px] text-muted-foreground font-medium">
                                     Subject: {email.subject}
                                   </div>
+                                  <div className="text-[10px] text-muted-foreground font-medium">
+                                    Sent via login: <span className="font-semibold text-foreground">{email.rmEmail || "Unknown"}</span>
+                                  </div>
                                 </div>
-                                <div className="text-right flex flex-col items-end gap-1.5">
-                                  <span className="text-[10px] text-muted-foreground font-semibold">
+                                <div className="shrink-0 text-right flex flex-col items-end gap-0.5">
+                                  <span className="text-[9px] text-muted-foreground font-semibold">
                                     {new Date(email.dispatchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                   </span>
-                                  <span className="text-[9px] text-muted-foreground font-medium">
+                                  <span className="text-[8px] text-muted-foreground font-medium">
                                     {new Date(email.dispatchedAt).toLocaleDateString()}
                                   </span>
                                 </div>
                               </div>
 
-                              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              <div className="flex items-center justify-end gap-1.5 border-t border-slate-100 pt-1.5 dark:border-slate-800">
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -8505,7 +8303,7 @@ export default function AdminDashboard() {
                                     setSelectedEmail(email);
                                     setShowEmailModal(true);
                                   }}
-                                  className="h-8 text-[11px] font-bold border-border text-primary hover:bg-secondary rounded-xl flex items-center gap-1"
+                                  className="h-7 text-[10px] font-bold border-border text-primary hover:bg-secondary rounded-lg flex items-center gap-1 px-2"
                                 >
                                   <Eye className="w-3.5 h-3.5" /> View HTML Invite
                                 </Button>
@@ -8518,7 +8316,7 @@ export default function AdminDashboard() {
                                     setDeletePasswordInput("");
                                     setDeleteModalError(null);
                                   }}
-                                  className="h-8 text-[11px] font-bold bg-red-600 hover:bg-red-700 text-white rounded-xl flex items-center gap-1 px-3"
+                                  className="h-7 text-[10px] font-bold bg-red-600 hover:bg-red-700 text-white rounded-lg flex items-center gap-1 px-2"
                                   title="Delete Email Log"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" /> Delete Log
@@ -8555,13 +8353,30 @@ export default function AdminDashboard() {
                             setCandidatePage(1);
                           }}
                         >
-                          <input
-                            type="text"
-                            placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
-                            value={candidateSearchDraft}
-                            onChange={(e) => setCandidateSearchDraft(e.target.value)}
-                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                          />
+                          <div className="relative min-w-0 flex-1">
+                            <input
+                              type="text"
+                              placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
+                              value={candidateSearchDraft}
+                              onChange={(e) => setCandidateSearchDraft(e.target.value)}
+                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            />
+                            {(candidateSearchDraft || candidateSearch) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCandidateSearch("");
+                                  setCandidateSearchDraft("");
+                                  setCandidatePage(1);
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                aria-label="Clear candidate search"
+                                title="Clear search"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                           <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
                             Search
                           </Button>
@@ -9452,8 +9267,19 @@ export default function AdminDashboard() {
                   placeholder="Search log activity & details..."
                   value={logsSearch}
                   onChange={(e) => setLogsSearch(e.target.value)}
-                  className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                  className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                 />
+                {logsSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setLogsSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                    aria-label="Clear log search"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
                 <select
@@ -9500,14 +9326,27 @@ export default function AdminDashboard() {
                   <option value="ERROR">Error</option>
                   <option value="CRITICAL">Critical</option>
                 </select>
-                <input
-                  type="search"
-                  placeholder="Filter user"
-                  aria-label="Filter logs by user"
-                  value={logsUserFilter}
-                  onChange={(e) => setLogsUserFilter(e.target.value)}
-                  className="rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 text-xs"
-                />
+                <div className="relative min-w-0">
+                  <input
+                    type="search"
+                    placeholder="Filter user"
+                    aria-label="Filter logs by user"
+                    value={logsUserFilter}
+                    onChange={(e) => setLogsUserFilter(e.target.value)}
+                    className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 pr-8 text-xs"
+                  />
+                  {logsUserFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setLogsUserFilter("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                      aria-label="Clear user filter"
+                      title="Clear filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
                 <div className="flex gap-2">
                   <input
                     type="date"
@@ -9751,6 +9590,10 @@ export default function AdminDashboard() {
                 <span className="text-primary font-semibold ml-1.5">&lt;{selectedEmail.to}&gt;</span>
               </div>
               <div>
+                <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Sent via login:</span>
+                <span className="text-slate-800 dark:text-slate-200 font-semibold ml-2">{selectedEmail.rmEmail || "Unknown"}</span>
+              </div>
+              <div>
                 <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] w-12 inline-block">Subject:</span>
                 <span className="text-slate-800 dark:text-slate-200 font-semibold">{selectedEmail.subject}</span>
               </div>
@@ -9846,7 +9689,7 @@ export default function AdminDashboard() {
                    deleteTargetId === "bulk-emails" ? "Delete Selected Email Logs" :
                    deleteTargetId === "bulk-employees-pool" ? "Delete Selected Employees" :
                    deleteTargetId === "bulk-jds" ? "Delete Selected Requirements" :
-                   deleteTargetId === "bulk-portal-videos" ? "Delete Selected Proctoring Videos" :
+                   deleteTargetId === "bulk-portal-employees" ? "Delete Selected Employee Portal Accounts" :
                    deleteTargetId === "clear-outbox" ? "Clear Email Outbox" :
                    deleteTargetId.startsWith("outbox-log:") ? "Delete Email Log" : 
                    deleteTargetId.startsWith("emp-") ? "Delete Employee Record" : "Delete Candidate Record"}
@@ -9871,8 +9714,8 @@ export default function AdminDashboard() {
                   ? `This action is permanent and will delete the ${selectedEmployeeIds.length} selected corporate pool employee records and their stored resumes.`
                   : deleteTargetId === "bulk-jds"
                   ? `This action is permanent and will delete the ${selectedJdIds.length} selected job requirements (BR / JD).`
-                  : deleteTargetId === "bulk-portal-videos"
-                  ? `This will permanently delete proctoring videos for ${selectedPortalVideoTargets.length} selected employee(s). Test scores, answers, and status will NOT be changed.`
+                  : deleteTargetId === "bulk-portal-employees"
+                  ? `This action is permanent and will delete ${selectedPortalEmployeeIds.length} selected employee portal account(s), including their assessments, answers, and stored videos.`
                   : deleteTargetId === "clear-outbox"
                   ? "This action is permanent and will clear all invitation email logs from the outbox."
                   : deleteTargetId.startsWith("outbox-log:")
