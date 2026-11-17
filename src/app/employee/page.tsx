@@ -89,6 +89,8 @@ export default function EmployeeLoginPage() {
   const [resetEmail, setResetEmail] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetOtp, setResetOtp] = useState("");
+  const [resetOtpSent, setResetOtpSent] = useState(false);
   const [org, setOrg] = useState<string | null>(null);
   
   // First time login choices modal states
@@ -96,17 +98,37 @@ export default function EmployeeLoginPage() {
     token: string;
     employee_id: string;
     full_name: string;
+    mustChangePassword: boolean;
   } | null>(null);
   const [changePasswordMode, setChangePasswordMode] = useState(false);
   const [modalNewPassword, setModalNewPassword] = useState("");
   const [modalConfirmPassword, setModalConfirmPassword] = useState("");
+  const [modalOtp, setModalOtp] = useState("");
+  const [modalOtpSent, setModalOtpSent] = useState(false);
   const [modalError, setModalError] = useState("");
   const [modalSubmitting, setModalSubmitting] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [ssoStatus, setSsoStatus] = useState<"loading" | "enabled" | "disabled" | "error">("loading");
   const [welcomeColorIndex, setWelcomeColorIndex] = useState(0);
   const [showMotivationalQuote, setShowMotivationalQuote] = useState(false);
   const [motivationalQuoteIndex, setMotivationalQuoteIndex] = useState(-1);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/employee/auth/saml/status", { cache: "no-store" })
+      .then(async (response) => {
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Could not check sign-in settings.");
+        if (!cancelled) setSsoStatus(status.enabled === true ? "enabled" : "disabled");
+      })
+      .catch(() => {
+        if (!cancelled) setSsoStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!showWelcome) return;
@@ -160,7 +182,7 @@ export default function EmployeeLoginPage() {
     syncRouteState();
     window.addEventListener("popstate", syncRouteState);
     return () => window.removeEventListener("popstate", syncRouteState);
-  }, []);
+  }, [ssoStatus]);
 
   const openPasswordSignIn = () => {
     setError("");
@@ -207,8 +229,9 @@ export default function EmployeeLoginPage() {
       }
       window.localStorage.setItem("employee_token", firstTimeModalData.token);
       router.push("/employee/dashboard");
-    } catch (err: any) {
-      setModalError(err.message || "An unexpected error occurred.");
+    } catch (err) {
+      console.error("Could not confirm the employee's existing password:", err);
+      setModalError("Could not confirm your password because the sign-in service could not be reached. Check your connection and retry.");
     } finally {
       setModalSubmitting(false);
     }
@@ -221,6 +244,10 @@ export default function EmployeeLoginPage() {
 
     if (modalNewPassword !== modalConfirmPassword) {
       setModalError("Passwords do not match.");
+      return;
+    }
+    if (!/^\d{6}$/.test(modalOtp)) {
+      setModalError("Enter the 6-digit verification code sent to your registered email.");
       return;
     }
     if (modalNewPassword.length < 8) {
@@ -236,7 +263,7 @@ export default function EmployeeLoginPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${firstTimeModalData.token}`,
         },
-        body: JSON.stringify({ action: "change", password: modalNewPassword }),
+        body: JSON.stringify({ action: "change", password: modalNewPassword, otp: modalOtp }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -245,8 +272,32 @@ export default function EmployeeLoginPage() {
       }
       window.localStorage.setItem("employee_token", firstTimeModalData.token);
       router.push("/employee/dashboard");
-    } catch (err: any) {
-      setModalError(err.message || "An unexpected error occurred.");
+    } catch (err) {
+      console.error("Could not update the employee password:", err);
+      setModalError("Password update could not reach the sign-in service. Check your connection and retry.");
+    } finally {
+      setModalSubmitting(false);
+    }
+  };
+
+  const handleFirstLoginOtp = async () => {
+    if (!firstTimeModalData) return;
+    setModalSubmitting(true);
+    setModalError("");
+    try {
+      const response = await fetch("/api/employee/auth/request-password-change-otp", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${firstTimeModalData.token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setModalError(data.error || "Could not send a verification code.");
+        return;
+      }
+      setModalOtpSent(true);
+      setModalError("");
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : "Could not send a verification code.");
     } finally {
       setModalSubmitting(false);
     }
@@ -289,8 +340,11 @@ export default function EmployeeLoginPage() {
           token: result.token,
           employee_id: result.employee?.employee_id || trimmedId,
           full_name: result.employee?.full_name || trimmedId,
+          mustChangePassword: result.mustChangePassword === true,
         });
-        setChangePasswordMode(false);
+        setChangePasswordMode(result.mustChangePassword === true);
+        setModalOtp("");
+        setModalOtpSent(false);
         setModalError("");
         return;
       }
@@ -307,9 +361,9 @@ export default function EmployeeLoginPage() {
         return;
       }
 
-      setError("Unable to authenticate. Please try again.");
-    } catch (err: any) {
-      setError(err?.message || "Unexpected error during login.");
+      setError("Login response did not include a valid employee session. Retry; contact support if it continues.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Employee sign-in could not be completed. Retry; contact support if it continues.");
     } finally {
       setLoading(false);
     }
@@ -325,19 +379,37 @@ export default function EmployeeLoginPage() {
       setError("Please enter your Employee ID.");
       return;
     }
-    if (resetNewPassword !== resetConfirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-    
     setLoading(true);
     try {
+      if (!resetOtpSent) {
+        const requestResponse = await fetch("/api/employee/auth/request-password-reset-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ employee_id: trimmedId, email: resetEmail }),
+        });
+        const requestData = await requestResponse.json().catch(() => ({}));
+        if (!requestResponse.ok) {
+          setError(requestData?.error || "Could not send a verification code.");
+          return;
+        }
+        setResetOtpSent(true);
+        setInfo(requestData?.message || "A verification code has been sent to your registered email.");
+        return;
+      }
+      if (!/^\d{6}$/.test(resetOtp)) {
+        setError("Enter the 6-digit verification code.");
+        return;
+      }
+      if (resetNewPassword !== resetConfirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
       const response = await fetch("/api/employee/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           employee_id: trimmedId,
-          email: resetEmail,
+          otp: resetOtp,
           password: resetNewPassword
         }),
       });
@@ -359,8 +431,11 @@ export default function EmployeeLoginPage() {
       setResetEmail("");
       setResetNewPassword("");
       setResetConfirmPassword("");
-    } catch (err: any) {
-      setError(err?.message || "An unexpected error occurred.");
+      setResetOtp("");
+      setResetOtpSent(false);
+    } catch (err) {
+      console.error("Could not complete the employee password reset:", err);
+      setError("Password reset could not reach the sign-in service. Check your connection and retry.");
     } finally {
       setLoading(false);
     }
@@ -707,7 +782,9 @@ export default function EmployeeLoginPage() {
               <span className="mt-1 block text-primary">sign in</span>
             </h2>
             <p className="mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-              Sign in with Microsoft, or use your Employee ID and password.
+              {ssoStatus === "enabled"
+                ? "Sign in with Microsoft and your organization's MFA policy, or use your Employee ID and password."
+                : "Sign in with Microsoft or use your Employee ID and password."}
             </p>
           </div>
 
@@ -715,6 +792,11 @@ export default function EmployeeLoginPage() {
             <div className="mb-3 w-full max-w-[360px] rounded-xl bg-red-500/10 border border-red-500/25 px-4 py-2.5 text-xs text-red-500 flex items-center gap-2">
               <span className="text-sm leading-none">⚠</span>
               <span className="font-medium">{error}</span>
+            </div>
+          ) : null}
+          {ssoStatus === "error" && !error ? (
+            <div role="status" className="mb-3 w-full max-w-[360px] rounded-xl bg-amber-500/10 border border-amber-500/25 px-4 py-2.5 text-xs text-amber-700">
+          Microsoft sign-in settings could not be checked. You can still use employee ID and password.
             </div>
           ) : null}
 
@@ -742,27 +824,27 @@ export default function EmployeeLoginPage() {
               <ArrowUpRight className="h-5 w-5 shrink-0 text-[#a16c80] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             </motion.button>
 
-            <motion.button
-              type="button"
-              onClick={openPasswordSignIn}
-              animate={prefersReducedMotion ? undefined : { y: [0, -3, 0] }}
-              transition={prefersReducedMotion ? undefined : { duration: 4.2, repeat: Infinity, ease: "easeInOut", delay: 0.65 }}
-              whileHover={prefersReducedMotion ? undefined : { y: -5, scale: 1.015 }}
-              whileTap={prefersReducedMotion ? undefined : { scale: 0.99 }}
-              className="group flex min-h-[72px] w-full items-center gap-3 rounded-2xl border border-[#d9c9ef] bg-gradient-to-br from-[#fbf8ff] via-[#f0e8fb] to-[#dfd1f2] px-3.5 py-3 text-left text-[#49395d] shadow-[0_16px_34px_-16px_rgba(116,83,157,0.34)] transition-colors duration-200 hover:border-[#ccb9e8] hover:from-[#fdfbff] hover:to-[#d8c8ed] hover:shadow-[0_22px_40px_-16px_rgba(116,83,157,0.44)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#a886ce]/30 sm:px-4"
-            >
-              <motion.span
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white text-[#8062a4] shadow-[0_8px_16px_-6px_rgba(72,49,102,0.28)] ring-1 ring-[#ded3ec]"
-                animate={prefersReducedMotion ? undefined : { y: [0, -4, 0] }}
-                transition={prefersReducedMotion ? undefined : { duration: 3.2, repeat: Infinity, ease: "easeInOut", delay: 0.45 }}
+              <motion.button
+                type="button"
+                onClick={openPasswordSignIn}
+                animate={prefersReducedMotion ? undefined : { y: [0, -3, 0] }}
+                transition={prefersReducedMotion ? undefined : { duration: 4.2, repeat: Infinity, ease: "easeInOut", delay: 0.65 }}
+                whileHover={prefersReducedMotion ? undefined : { y: -5, scale: 1.015 }}
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.99 }}
+                className="group flex min-h-[72px] w-full items-center gap-3 rounded-2xl border border-[#d9c9ef] bg-gradient-to-br from-[#fbf8ff] via-[#f0e8fb] to-[#dfd1f2] px-3.5 py-3 text-left text-[#49395d] shadow-[0_16px_34px_-16px_rgba(116,83,157,0.34)] transition-colors duration-200 hover:border-[#ccb9e8] hover:from-[#fdfbff] hover:to-[#d8c8ed] hover:shadow-[0_22px_40px_-16px_rgba(116,83,157,0.44)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#a886ce]/30 sm:px-4"
               >
-                <LockKeyhole className="h-5 w-5" />
-              </motion.span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-base font-bold">Employee ID and password</span>
-                <span className="mt-1 block text-xs text-[#716382]">Sign in with your Employee ID and password</span>
-              </span>
-              <ArrowRight className="h-5 w-5 shrink-0 text-[#8062a4] transition-transform group-hover:translate-x-1" />
+                <motion.span
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white bg-white text-[#8062a4] shadow-[0_8px_16px_-6px_rgba(72,49,102,0.28)] ring-1 ring-[#ded3ec]"
+                  animate={prefersReducedMotion ? undefined : { y: [0, -4, 0] }}
+                  transition={prefersReducedMotion ? undefined : { duration: 3.2, repeat: Infinity, ease: "easeInOut", delay: 0.45 }}
+                >
+                  <LockKeyhole className="h-5 w-5" />
+                </motion.span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-base font-bold">Employee ID and password</span>
+                  <span className="mt-1 block text-xs text-[#716382]">Sign in with your Employee ID and password</span>
+                </span>
+                <ArrowRight className="h-5 w-5 shrink-0 text-[#8062a4] transition-transform group-hover:translate-x-1" />
             </motion.button>
           </div>
 
@@ -802,7 +884,7 @@ export default function EmployeeLoginPage() {
               </h1>
               <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed max-w-sm mx-auto">
                 {isResetPassword
-                  ? "Verify your Employee ID and email to set a new password."
+                  ? resetOtpSent ? "Enter the code sent to your registered email and choose a new password." : "We will send a verification code to your registered email."
                   : org
                     ? `Sign in to ${org} with your Employee ID and password.`
                     : "Sign in with your Employee ID and password."}
@@ -859,6 +941,8 @@ export default function EmployeeLoginPage() {
                         setError("");
                         setInfo("");
                         setIsResetPassword(true);
+                        setResetOtpSent(false);
+                        setResetOtp("");
                       }}
                       className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
                     >
@@ -889,7 +973,11 @@ export default function EmployeeLoginPage() {
                   <input
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={employeeId}
-                    onChange={(event) => setEmployeeId(event.target.value)}
+                    onChange={(event) => {
+                      setEmployeeId(event.target.value);
+                      setResetOtpSent(false);
+                      setResetOtp("");
+                    }}
                     placeholder="e.g. EMP001"
                     required
                   />
@@ -900,11 +988,28 @@ export default function EmployeeLoginPage() {
                     type="email"
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
                     value={resetEmail}
-                    onChange={(event) => setResetEmail(event.target.value)}
-                    placeholder="e.g. sofia@example.com (Leave blank if none)"
+                    onChange={(event) => {
+                      setResetEmail(event.target.value);
+                      setResetOtpSent(false);
+                      setResetOtp("");
+                    }}
+                    placeholder="Your registered email"
+                    required
                   />
                 </div>
-                <div>
+                {resetOtpSent && <div>
+                  <label className="block text-xs font-bold text-foreground mb-1.5">Email verification code</label>
+                  <input
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium tracking-[0.3em] placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
+                    value={resetOtp}
+                    onChange={(event) => setResetOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6-digit code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    required
+                  />
+                </div>}
+                {resetOtpSent && <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
                   <PasswordInput
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
@@ -914,8 +1019,8 @@ export default function EmployeeLoginPage() {
                     required
                     autoComplete="new-password"
                   />
-                </div>
-                <div>
+                </div>}
+                {resetOtpSent && <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">Confirm New Password</label>
                   <PasswordInput
                     className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium placeholder:text-muted-foreground outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 transition-all"
@@ -925,13 +1030,13 @@ export default function EmployeeLoginPage() {
                     required
                     autoComplete="new-password"
                   />
-                </div>
+                </div>}
                 <Button
                   className="w-full px-4 py-2.5 rounded-xl bg-primary text-white font-bold shadow-lg shadow-indigo-500/30 transition-all duration-200"
                   type="submit"
                   disabled={loading}
                 >
-                  {loading ? "Resetting password…" : "Reset Password"}
+                  {loading ? (resetOtpSent ? "Resetting password…" : "Sending code…") : resetOtpSent ? "Reset Password" : "Send verification code"}
                 </Button>
                 <div className="text-center mt-1">
                   <button
@@ -940,6 +1045,8 @@ export default function EmployeeLoginPage() {
                       setError("");
                       setInfo("");
                       setIsResetPassword(false);
+                      setResetOtpSent(false);
+                      setResetOtp("");
                     }}
                     className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors"
                   >
@@ -979,9 +1086,11 @@ export default function EmployeeLoginPage() {
               <div className="space-y-4">
                 <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-4 text-xs text-muted-foreground leading-relaxed">
                   <p className="font-bold text-primary mb-1">First Time Login</p>
-                  You are logging in with your initial assigned password. You can choose to keep this password or set a new custom one now.
+                  {firstTimeModalData.mustChangePassword
+                    ? "This is your initial Employee ID password. Verify your registered email and choose a new password to continue."
+                    : "You are logging in for the first time. You can set a new password now or continue with your current sign-in method."}
                 </div>
-                <div className="flex flex-col gap-2">
+                {!firstTimeModalData.mustChangePassword && <div className="flex flex-col gap-2">
                   <Button
                     onClick={handleKeepPassword}
                     disabled={modalSubmitting}
@@ -995,16 +1104,37 @@ export default function EmployeeLoginPage() {
                       setChangePasswordMode(true);
                       setModalNewPassword("");
                       setModalConfirmPassword("");
+                      setModalOtp("");
+                      setModalOtpSent(false);
                     }}
                     disabled={modalSubmitting}
                     className="w-full py-2.5 rounded-xl border-border font-bold"
                   >
                     Set a New Password
                   </Button>
-                </div>
+                </div>}
               </div>
             ) : (
               <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <label htmlFor="first-login-otp" className="block text-xs font-bold text-foreground">Email verification code</label>
+                    <Button type="button" size="sm" variant="outline" onClick={handleFirstLoginOtp} disabled={modalSubmitting}>
+                      {modalSubmitting ? "Sending…" : modalOtpSent ? "Resend code" : "Send code"}
+                    </Button>
+                  </div>
+                  <input
+                    id="first-login-otp"
+                    required
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    className="w-full text-sm rounded-xl border-2 border-border bg-muted/40 px-4 py-2.5 text-foreground font-medium tracking-[0.3em] outline-none focus:border-indigo-500 transition-all"
+                    placeholder="6-digit code"
+                    value={modalOtp}
+                    onChange={(e) => setModalOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  />
+                </div>
                 <div>
                   <label className="block text-xs font-bold text-foreground mb-1.5">New Password</label>
                   <PasswordInput
@@ -1028,16 +1158,20 @@ export default function EmployeeLoginPage() {
                   />
                 </div>
                 <div className="flex gap-2 pt-2">
-                  <Button
+                  {!firstTimeModalData.mustChangePassword && <Button
                     type="button"
                     variant="ghost"
-                    onClick={() => setChangePasswordMode(false)}
+                    onClick={() => {
+                      setChangePasswordMode(false);
+                      setModalOtp("");
+                      setModalOtpSent(false);
+                    }}
                     disabled={modalSubmitting}
                     className="flex-1 py-2.5 rounded-xl text-xs font-bold"
                   >
                     ← Back
-                  </Button>
-                  <Button type="submit" disabled={modalSubmitting} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
+                  </Button>}
+                  <Button type="submit" disabled={modalSubmitting || !modalOtpSent} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
                     {modalSubmitting ? "Saving..." : "Save & Continue"}
                   </Button>
                 </div>

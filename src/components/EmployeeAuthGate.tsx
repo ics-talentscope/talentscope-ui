@@ -124,18 +124,44 @@ function EditProfileDialog({
 }
 
 function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
-  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  async function requestCode() {
+    setError("");
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/employee/auth/request-password-change-otp", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${window.localStorage.getItem("employee_token") ?? ""}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data?.error || "Could not send a verification code.");
+        return;
+      }
+      setOtpSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send a verification code.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     if (newPassword !== confirmPassword) {
       setError("New passwords do not match.");
+      return;
+    }
+    if (!otpSent || !/^\d{6}$/.test(otp)) {
+      setError("Enter the 6-digit verification code sent to your registered email.");
       return;
     }
     setSubmitting(true);
@@ -146,7 +172,7 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${window.localStorage.getItem("employee_token") ?? ""}`,
         },
-        body: JSON.stringify({ currentPassword, newPassword }),
+        body: JSON.stringify({ otp, newPassword }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -178,7 +204,7 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
           </div>
           <h2 className="text-xl font-extrabold text-foreground">Change password</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            At least 8 characters with uppercase, lowercase, a number and a special character.
+            Verify your registered email, then use at least 8 characters with uppercase, lowercase, a number and a special character.
           </p>
         </div>
 
@@ -200,13 +226,22 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-foreground mb-1.5">Current password</label>
-              <PasswordInput
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label htmlFor="password-change-otp" className="block text-xs font-bold text-foreground">Email verification code</label>
+                <Button type="button" size="sm" variant="outline" onClick={requestCode} disabled={submitting}>
+                  {submitting ? "Sending…" : otpSent ? "Resend code" : "Send code"}
+                </Button>
+              </div>
+              <input
+                id="password-change-otp"
                 required
-                autoComplete="current-password"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
                 className={passwordInputClass}
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="6-digit code"
               />
             </div>
             <div>
@@ -233,7 +268,7 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
               <Button type="button" variant="ghost" onClick={onClose} disabled={submitting} className="flex-1 py-2.5 rounded-xl text-xs font-bold">
                 Cancel
               </Button>
-              <Button type="submit" disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
+              <Button type="submit" disabled={submitting || !otpSent} className="flex-1 py-2.5 rounded-xl bg-primary text-white font-bold">
                 {submitting ? "Saving..." : "Update password"}
               </Button>
             </div>

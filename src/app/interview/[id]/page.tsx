@@ -118,6 +118,9 @@ export default function CandidatePortal() {
 
 
   const [questions, setQuestions] = useState<string[]>([]);
+  const [questionsLoadError, setQuestionsLoadError] = useState<string | null>(null);
+  const [questionLoadRequiresSignIn, setQuestionLoadRequiresSignIn] = useState(false);
+  const [questionLoadAttempt, setQuestionLoadAttempt] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedLanguage, setSelectedLanguage] = useState('javascript');
   const [submittedAnswers, setSubmittedAnswers] = useState<Record<number, string>>({});
@@ -191,6 +194,7 @@ export default function CandidatePortal() {
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [showManualCheckNotice, setShowManualCheckNotice] = useState(false);
   const verificationTimeoutRef = useRef<any>(null);
+  const [isPreparingIdentity, setIsPreparingIdentity] = useState(false);
 
   const [hasSavedSession, setHasSavedSession] = useState(false);
 
@@ -366,6 +370,14 @@ export default function CandidatePortal() {
         setSelectedLanguage(saved.selectedLanguage || 'javascript');
         setAnswer(saved.answer || '');
 
+        if (saved.currentStep === 'setup' && saved.hasAgreed) {
+          if (saved.verificationResult?.matched) {
+            setShowStartConfirm(true);
+          } else {
+            setShowIdVerification(true);
+          }
+        }
+
         // If the step is questions, intro, or candidate_question, activate listeners and timer
         if (saved.currentStep !== 'setup') {
           await loadTiming();
@@ -419,6 +431,7 @@ export default function CandidatePortal() {
   
   // Speech & Audio Analysis references
   const recognitionRef = useRef<any>(null);
+  const ignoreSpeechResultsRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -490,6 +503,7 @@ export default function CandidatePortal() {
       }
     }
     setInterviewEnded(true);
+    setIsRecording(false);
     stopTimer();
     stopListening();
     if (window.speechSynthesis) speechSynthesis.cancel();
@@ -635,28 +649,42 @@ export default function CandidatePortal() {
   useEffect(() => {
     if (!resumeId) return;
 
+    let active = true;
+    setIsInitializing(true);
+    setQuestionsLoadError(null);
+    setQuestionLoadRequiresSignIn(false);
     interviewFetch(`/api/interview/${resumeId}/questions`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          setQuestions(data);
-        } else {
-          console.error("Failed to load questions, invalid data", data);
-          setGeneralError("Failed to load questions for this interview. Please refresh the page.");
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (res.status === 401 || res.status === 403) {
+          if (active) setQuestionLoadRequiresSignIn(true);
+          throw new Error("Your candidate sign-in may have expired. Please sign in again.");
         }
+        if (!res.ok) {
+          throw new Error(data?.message || data?.error || `Question service returned ${res.status}.`);
+        }
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error("No interview questions are available yet.");
+        }
+        return data as string[];
+      })
+      .then(data => {
+        if (!active) return;
+        setQuestions(data);
         setIsInitializing(false);
       })
       .catch(err => {
+        if (!active) return;
         console.error("Failed to load questions", err);
+        setQuestionsLoadError(err instanceof Error ? err.message : "Question preparation failed.");
         setIsInitializing(false);
-        setGeneralError("Failed to load questions. Please check your connection and try again.");
       });
 
     // Fetch previously submitted answers
     interviewFetch(`/api/interview/${resumeId}/answers`)
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) {
+        if (active && Array.isArray(data)) {
           const map: Record<number, string> = {};
           data.forEach(row => {
             map[row.question_index] = row.answer;
@@ -667,6 +695,7 @@ export default function CandidatePortal() {
       .catch(err => console.error("Failed to fetch submitted answers:", err));
 
     return () => {
+      active = false;
       stopTimer();
       if (window.speechSynthesis) speechSynthesis.cancel();
       
@@ -695,7 +724,7 @@ export default function CandidatePortal() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, [resumeId]);
+  }, [resumeId, questionLoadAttempt]);
 
   useEffect(() => {
     setTerminalOutput(null);
@@ -1291,6 +1320,12 @@ export default function CandidatePortal() {
   };
 
   const handleAgreeAndStart = async () => {
+    if (questions.length === 0) {
+      setQuestionsLoadError("Your interview questions are not ready yet. Please try loading them again.");
+      return;
+    }
+    setIsPreparingIdentity(true);
+    setMediaError(null);
     try {
       // Request camera and microphone permissions
       const { stream } = await acquireInterviewMedia();
@@ -1352,9 +1387,11 @@ export default function CandidatePortal() {
       setShowIdVerification(true);
     } catch (err: any) {
       console.error("❌ Failed to acquire real media streams:", err);
-      setGeneralError(null);
-      setHasAgreed(true);
-      setShowIdVerification(true);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setMediaError("Camera and microphone access is required to continue. Allow access in your browser, then try again.");
+    } finally {
+      setIsPreparingIdentity(false);
     }
   };
 
@@ -1634,13 +1671,14 @@ export default function CandidatePortal() {
     recognition.lang = 'en-US';
 
     recognition.onstart = () => {
+      ignoreSpeechResultsRef.current = false;
       setIsMicListening(true);
       setRecognitionError(null);
     };
 
     recognition.onresult = (event: any) => {
       // If we are on a coding question, ignore all live transcription to avoid overwriting code
-      if (isCodingQuestionRef.current) return;
+      if (isCodingQuestionRef.current || ignoreSpeechResultsRef.current) return;
 
       let fullTranscript = '';
       for (let i = 0; i < event.results.length; ++i) {
@@ -1677,6 +1715,17 @@ export default function CandidatePortal() {
     };
 
     recognitionRef.current = recognition;
+  };
+
+  const clearAnswer = () => {
+    setAnswer('');
+    if (!isMicListeningRef.current || !recognitionRef.current) return;
+    ignoreSpeechResultsRef.current = true;
+    try {
+      recognitionRef.current.abort();
+    } catch (err) {
+      console.debug("Could not restart speech recognition after clearing the transcript:", err);
+    }
   };
 
   const startListening = (force = false) => {
@@ -2220,7 +2269,7 @@ export default function CandidatePortal() {
       )}
 
       {/* Resume Session Modal */}
-      {hasSavedSession && !isInitializing && !interviewEnded && (
+      {hasSavedSession && !isInitializing && questions.length > 0 && !interviewEnded && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -2249,7 +2298,7 @@ export default function CandidatePortal() {
       )}
 
       {/* Agreement Modal */}
-      {!hasSavedSession && !hasAgreed && !isInitializing && !interviewEnded && (
+      {!hasSavedSession && !hasAgreed && !isInitializing && questions.length > 0 && !interviewEnded && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -2269,12 +2318,22 @@ export default function CandidatePortal() {
               <Mic className="w-6 h-6 text-red-500 dark:text-red-400 flex-shrink-0" />
               <p className="text-sm font-black leading-snug">You will be prompted to grant browser permissions for your camera and microphone.</p>
             </div>
+            {mediaError && (
+              <p role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300">
+                {mediaError}
+              </p>
+            )}
+            {isPreparingIdentity && (
+              <p role="status" className="mb-6 text-center text-sm font-semibold text-muted-foreground">
+                Preparing your camera and microphone. Please keep this page open.
+              </p>
+            )}
             <div className="flex flex-wrap gap-4 justify-center">
               <Link href="/">
                 <Button variant="outline" className="rounded-2xl border-border text-primary hover:bg-secondary px-6 font-bold">Cancel</Button>
               </Link>
-              <Button onClick={handleAgreeAndStart} className="bg-primary hover:from-indigo-700 hover:to-violet-700 text-white gap-2 rounded-2xl px-6 font-bold shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all">
-                I Agree, Start Interview <ArrowRight className="w-4 h-4" />
+              <Button onClick={handleAgreeAndStart} disabled={isPreparingIdentity} className="bg-primary hover:from-indigo-700 hover:to-violet-700 text-white gap-2 rounded-2xl px-6 font-bold shadow-md shadow-indigo-500/25 hover:shadow-lg hover:shadow-indigo-500/35 transition-all">
+                {isPreparingIdentity ? "Preparing camera…" : "I Agree, Start Interview"} <ArrowRight className="w-4 h-4" />
               </Button>
             </div>
           </Card>
@@ -2601,6 +2660,9 @@ export default function CandidatePortal() {
                         selectedIdType: verificationResult.selectedIdType || selectedIdType,
                       })}
                     </div>
+                    <p className="text-sm text-muted-foreground">
+                      Identity verification is complete; your interview has not started yet. Continue to the instructions, then select “Start Test Now”.
+                    </p>
 
                     <div className="grid grid-cols-2 gap-4 my-6 w-full max-w-md">
                       <div className="flex flex-col items-center gap-1.5">
@@ -3048,7 +3110,34 @@ export default function CandidatePortal() {
       <main className="max-w-full mx-auto px-6 md:px-12 py-8">
         {isInitializing ? (
           <div className="py-16">
-            <PageLoadingSkeleton label="Generating your personalized questions" />
+            <PageLoadingSkeleton
+              label="Preparing your interview"
+              description="AI is generating your personalized questions while your session is being checked. This may take up to five minutes; please keep this page open and do not refresh."
+            />
+          </div>
+        ) : questions.length === 0 ? (
+          <div className="mx-auto max-w-xl py-16 px-6 text-center space-y-4" role="alert">
+            <h2 className="text-xl font-bold text-foreground">
+              {questionsLoadError ? "We couldn't prepare your interview" : "Your interview is not ready yet"}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {questionLoadRequiresSignIn
+                ? "Your sign-in may have expired. The interview has not started, and your session is still here."
+                : "We could not load your questions, so the interview has not started. Your session is still here. Please keep this page open and try again."}
+            </p>
+            <div className="flex flex-wrap justify-center gap-3">
+              <Button
+                onClick={() => setQuestionLoadAttempt((attempt) => attempt + 1)}
+                className="bg-primary text-white"
+              >
+                Try loading questions again
+              </Button>
+              {questionLoadRequiresSignIn && (
+                <Button variant="outline" onClick={() => window.location.assign("/")}>
+                  Return to candidate sign in
+                </Button>
+              )}
+            </div>
           </div>
         ) : !interviewEnded ? (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
@@ -3667,7 +3756,7 @@ export default function CandidatePortal() {
 
                         <Button
                           variant="outline"
-                          onClick={() => setAnswer('')}
+                          onClick={clearAnswer}
                           className="rounded-2xl border border-border text-muted-foreground hover:bg-slate-50 dark:hover:bg-slate-850 h-10 px-3 font-bold gap-1 text-xs"
                           disabled={!answer || showStartConfirm}
                         >

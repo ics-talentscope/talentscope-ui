@@ -78,6 +78,26 @@ export interface LearningModule {
   created_at: string;
 }
 
+export interface ExternalSource {
+  name: string;
+  title: string;
+  url: string;
+  description?: string;
+}
+
+export interface TopicSourceDetail {
+  topic_id: string;
+  topic_title: string;
+  subject_id: string;
+  subject_title: string;
+  difficulty: DifficultyLevel;
+  estimated_minutes: number;
+  word_count: number;
+  key_points: string[];
+  explanation: string;
+  sources: ExternalSource[];
+}
+
 export interface LearningTopic {
   id: string;
   module_id: string;
@@ -86,6 +106,7 @@ export interface LearningTopic {
   difficulty: DifficultyLevel;
   order_index: number;
   estimated_minutes: number;
+  sources?: ExternalSource[];
   created_at: string;
 }
 

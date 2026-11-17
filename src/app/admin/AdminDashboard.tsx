@@ -38,6 +38,7 @@ import {
   KeyRound,
   Check,
   Percent,
+  Search,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { formatPortalTimestamp } from "@/lib/portal-format";
@@ -75,7 +76,7 @@ import {
 } from "@/lib/portal-test-status";
 import { formatProductDisplayName } from "@/lib/product-display-name";
 import { getPortalPrimaryProctoring } from "@/lib/portal-proctor-display";
-import { calculateSkillMatch, candidateMatchText, compareMatchRank, compileJdForMatch, decisionFromScore, employeeMatchText, extractJdMandatorySkills, extractJdPrimarySkills, QUALIFIED_COVERAGE_PERCENT, scoreOverrideForJd, type SkillBreakdownItem, type ScoreParts } from "@/lib/skill-match";
+import { calculateSkillMatch, candidateMatchText, compareMatchRank, compileJdForMatch, decisionFromScore, employeeMatchText, extractJdMandatorySkills, extractJdPrimarySkills, profileExperienceYears, QUALIFIED_COVERAGE_PERCENT, scoreOverrideForJd, type SkillBreakdownItem, type ScoreParts } from "@/lib/skill-match";
 import {
   ADMIN_SESSION_EXPIRED_EVENT,
   accessFlagsFromPayload,
@@ -85,6 +86,8 @@ import {
   type AdminAccessFlags,
 } from "@/lib/admin-accounts";
 import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
+import { EmployeePortalManager } from "@/components/admin/EmployeePortalManager";
+import { QuickSearchModal } from "@/components/admin/QuickSearchModal";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
 function portalEmployeeName(account: { full_name?: string | null; employee_id?: string | null }): string {
@@ -97,7 +100,91 @@ function portalEmployeeId(account: { employee_id?: string | null }): string {
   return account.employee_id?.trim() || "—";
 }
 
+function normalizeEmployeeId(value: unknown): string {
+  return String(value || "").trim().replace(/^(\d+)\.0+$/, "$1").toLowerCase();
+}
+
+function isArchivedPortalTest(test: { topicId?: string | null }): boolean {
+  return String(test.topicId ?? "").startsWith("resource-product-assessment-history");
+}
+
 const CORP_POOL_EARLIER_BATCH = "__earlier__";
+const ADMIN_LIST_PAGE_SIZES = [25, 50, 75, 100] as const;
+const DEFAULT_ADMIN_LIST_PAGE_SIZE = ADMIN_LIST_PAGE_SIZES[0];
+
+function getPageItems<T>(items: T[], page: number, pageSize: number): T[] {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(Math.max(page, 1), pageCount);
+  const start = (safePage - 1) * pageSize;
+  return items.slice(start, start + pageSize);
+}
+
+function AdminListPagination({
+  page,
+  total,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(page, 1), pageCount);
+  const firstItem = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const lastItem = Math.min(currentPage * pageSize, total);
+
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-xs text-muted-foreground">
+      <span>
+        Showing {firstItem}–{lastItem} of {total}
+      </span>
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-1.5 whitespace-nowrap font-semibold">
+          Rows per page
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value))}
+            className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+            aria-label="Rows per page"
+          >
+            {ADMIN_LIST_PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
+        <nav className="flex items-center gap-2" aria-label="List pagination">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={currentPage === 1}
+            onClick={() => onPageChange(currentPage - 1)}
+            className="h-8 rounded-lg px-2.5 text-xs"
+          >
+            Previous
+          </Button>
+          <span aria-live="polite">
+            Page {currentPage} of {pageCount}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={currentPage === pageCount}
+            onClick={() => onPageChange(currentPage + 1)}
+            className="h-8 rounded-lg px-2.5 text-xs"
+          >
+            Next
+          </Button>
+        </nav>
+      </div>
+    </div>
+  );
+}
 
 // macOS file pickers grey out files whose type isn't listed, so give MIME types alongside extensions.
 const FILE_TYPES = {
@@ -285,6 +372,17 @@ function personSkillChips(emp: { skills?: string | null; matchingSkills?: string
   );
 }
 
+function outboxStatusBadge(status?: string | null): { label: string; className: string } {
+  const raw = (status || "").toLowerCase();
+  if (raw === "sent") {
+    return { label: "Sent", className: "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-0" };
+  }
+  if (raw.includes("failed")) {
+    return { label: "Send failed", className: "bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-0" };
+  }
+  return { label: "Simulated", className: "bg-secondary text-primary border-0" };
+}
+
 function skillMatchBadge(item: Pick<SkillBreakdownItem, "status" | "scoring">): { label: string; className: string } {
   if (!item.scoring && item.status !== "missing") {
     return { label: "Present", className: "bg-slate-200/80 dark:bg-slate-700 text-slate-700 dark:text-slate-200" };
@@ -343,6 +441,10 @@ function portalPrimaryCompletedAt(account: {
     account.tests?.find((t) => t.id === account.test_id && t.status === "completed") ??
     account.tests?.find((t) => t.status === "completed");
   return primary?.completedAt ?? null;
+}
+
+function portalTestTitle(title: string | null | undefined): string {
+  return String(title || "").replace(/\s+\(previous(?: attempt)?\)$/i, "").trim();
 }
 
 function formatPortalCompletedAt(value: string | null | undefined): string {
@@ -574,7 +676,11 @@ function portalVideoTest(account: {
   const recordingReady = (test: {
     status?: string;
     hasRecording?: boolean;
-  }) => test.status === "completed" && Boolean(test.hasRecording);
+    videoUrl?: string | null;
+    proctoring?: { videoUploaded?: boolean } | null;
+  }) =>
+    test.status === "completed" &&
+    Boolean(test.hasRecording || test.proctoring?.videoUploaded || test.videoUrl);
 
   const completedWithVideo = account.tests?.find(recordingReady);
   if (completedWithVideo) {
@@ -661,7 +767,12 @@ function adminFetchNow(input: RequestInfo | URL, init?: RequestInit): Promise<Re
     ...init,
     headers: headersObj,
   }).then((res) => {
-    if (res.status === 401 && typeof window !== "undefined") {
+    if (
+      res.status === 401 &&
+      token &&
+      typeof window !== "undefined" &&
+      window.sessionStorage.getItem("admin_token") === token
+    ) {
       window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
     }
     return res;
@@ -1025,7 +1136,13 @@ function calculateCandidateMatch(row: any, jdText: string) {
       rationale: "No skills or requirement text to score.",
     };
   }
-  return calculateSkillMatch(candidateMatchText(row), jdText);
+  const profileText = candidateMatchText(row);
+  const years = profileExperienceYears(
+    row.parsed?.experience,
+    row.parsed?.yearsExperience ?? row.yearsExperience ?? row.years_experience,
+    profileText
+  );
+  return calculateSkillMatch(profileText, jdText, undefined, years);
 }
 
 
@@ -1136,6 +1253,7 @@ export default function AdminDashboard() {
   const canViewEmployeePortal = adminPermissions.employeePortal;
   const canChangePassword = adminPermissions.changePassword;
   const [showAccessManager, setShowAccessManager] = useState(false);
+  const [showEmployeePortalManager, setShowEmployeePortalManager] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
@@ -1248,16 +1366,32 @@ export default function AdminDashboard() {
     testId: string;
     employeeId: string;
     employeeName: string;
+    testTitle: string;
   } | null>(null);
+  // Exactly one live test can be selected per employee for a reset.
+  const [selectedResetTestByEmployee, setSelectedResetTestByEmployee] = useState<Record<string, string>>({});
+  const [resetPortalPasswordTarget, setResetPortalPasswordTarget] = useState<{
+    employeeId: string;
+    employeeName: string;
+    email: string;
+  } | null>(null);
+  const [resettingPortalPasswordEmployeeId, setResettingPortalPasswordEmployeeId] = useState<string | null>(null);
+  const [savingPortalEmployeeId, setSavingPortalEmployeeId] = useState<string | null>(null);
   const [testResultsSearch, setTestResultsSearch] = useState("");
+  const [testResultsSearchDraft, setTestResultsSearchDraft] = useState("");
   const [testStatusFilter, setTestStatusFilter] = useState<PortalTestStatusFilter>("all");
+  const [portalProductFilter, setPortalProductFilter] = useState<string>("all");
+  const [portalDomainFilter, setPortalDomainFilter] = useState<string>("all");
   const [portalCompletedDateFilter, setPortalCompletedDateFilter] = useState<string>("all");
+  const [portalPage, setPortalPage] = useState(1);
+  const [adminListPageSize, setAdminListPageSize] = useState<number>(DEFAULT_ADMIN_LIST_PAGE_SIZE);
   const [portalCompletedDateMenu, setPortalCompletedDateMenu] = useState<PortalCompletedDateMenu>({
     type: "root",
   });
   const [portalCompletedDateOpen, setPortalCompletedDateOpen] = useState(false);
   const portalCompletedDateRef = useRef<HTMLDivElement | null>(null);
   const [expandedEmployees, setExpandedEmployees] = useState<Record<string, boolean>>({});
+  const [expandedTestDetails, setExpandedTestDetails] = useState<Record<string, boolean>>({});
   const [expandedProctorFlags, setExpandedProctorFlags] = useState<Record<string, boolean>>({});
   const [testAttemptDetails, setTestAttemptDetails] = useState<
     Record<
@@ -1277,9 +1411,6 @@ export default function AdminDashboard() {
       }
     >
   >({});
-  const [assignedQuestionsByEmployee, setAssignedQuestionsByEmployee] = useState<
-    Record<string, { loading: boolean; questions: string[]; error?: string }>
-  >({});
   const [emails, setEmails] = useState<any[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<any>(null);
   const [showEmailModal, setShowEmailModal] = useState(false);
@@ -1293,27 +1424,45 @@ export default function AdminDashboard() {
   const [employees, setEmployees] = useState<any[]>([]);
   const [isEmployeesLoading, setIsEmployeesLoading] = useState(false);
   const [isExportingPortal, setIsExportingPortal] = useState(false);
+  const [isExportingPortalSummary, setIsExportingPortalSummary] = useState(false);
   const [isDispatchingMails, setIsDispatchingMails] = useState(false);
   const [portalMailSendingId, setPortalMailSendingId] = useState<string | null>(null);
   const [isBulkPortalMailing, setIsBulkPortalMailing] = useState(false);
-  const [isBulkPortalDownloading, setIsBulkPortalDownloading] = useState(false);
-  const [bulkPortalDownloadProgress, setBulkPortalDownloadProgress] = useState<{
-    current: number;
-    total: number;
-  } | null>(null);
   const [activeEmployee, setActiveEmployee] = useState<any>(null);
+  const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [employeeSearch, setEmployeeSearch] = useState("");
+  const [employeeSearchDraft, setEmployeeSearchDraft] = useState("");
+  const [corpPoolPage, setCorpPoolPage] = useState(1);
   const [qwenScoring, setQwenScoring] = useState(false);
   const [qwenProgress, setQwenProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedPool, setSelectedPool] = useState<{ ids: string[]; dateLabel: string } | null>(readStoredSelectedPool);
   const qwenScanSeqRef = useRef(0);
   const qwenScanIdRef = useRef("");
   const [requirementSearch, setRequirementSearch] = useState("");
+  const [requirementSearchDraft, setRequirementSearchDraft] = useState("");
+  const [requirementPage, setRequirementPage] = useState(1);
   const [requirementDateFilter, setRequirementDateFilter] = useState("all");
   const [requirementSkillFilter, setRequirementSkillFilter] = useState("all");
   const [candidateSearch, setCandidateSearch] = useState("");
+  const [candidateSearchDraft, setCandidateSearchDraft] = useState("");
+  const [candidatePage, setCandidatePage] = useState(1);
   const [outboxSearch, setOutboxSearch] = useState("");
+  const [outboxSearchDraft, setOutboxSearchDraft] = useState("");
+  const [outboxPage, setOutboxPage] = useState(1);
   const [expandedJdId, setExpandedJdId] = useState<string | null>(null);
+
+  const handleAdminListPageSizeChange = useCallback((pageSize: number) => {
+    setAdminListPageSize(pageSize);
+    setPortalPage(1);
+    setRequirementPage(1);
+    setCandidatePage(1);
+    setCorpPoolPage(1);
+    setOutboxPage(1);
+  }, []);
+
+  useEffect(() => {
+    setCandidatePage(1);
+  }, [activeTab]);
 
   const [portalSettings, setPortalSettings] = useState({
     showSystemLogsViewer: true,
@@ -1348,6 +1497,12 @@ export default function AdminDashboard() {
   const [logsSearch, setLogsSearch] = useState("");
   const [logsModuleFilter, setLogsModuleFilter] = useState("all");
   const [logsStatusFilter, setLogsStatusFilter] = useState("all");
+  const [logsLevelFilter, setLogsLevelFilter] = useState("all");
+  const [logsUserFilter, setLogsUserFilter] = useState("");
+  const [logsFromFilter, setLogsFromFilter] = useState("");
+  const [logsToFilter, setLogsToFilter] = useState("");
+  const [logsExportFormat, setLogsExportFormat] = useState("csv");
+  const [logMetrics, setLogMetrics] = useState<Record<string, number>>({});
 
   // Ingestion status state
   const [pipelineStatus, setPipelineStatus] = useState("Ingestion: Idle");
@@ -1454,7 +1609,7 @@ export default function AdminDashboard() {
       }
       loadLogs();
     }
-  }, [logsModuleFilter, logsStatusFilter, logsSearch]);
+  }, [logsModuleFilter, logsStatusFilter, logsSearch, logsLevelFilter, logsUserFilter, logsFromFilter, logsToFilter]);
 
   useEffect(() => {
     const flushPending = () => {
@@ -1856,40 +2011,6 @@ export default function AdminDashboard() {
     }
   }, [authenticated, adminEmail, selectedJdId, loadEmployees]);
 
-  const loadAssignedQuestions = async (employeeId: string) => {
-    let shouldFetch = true;
-    setAssignedQuestionsByEmployee((prev) => {
-      const cached = prev[employeeId];
-      if (cached?.loading || (cached?.questions?.length && !cached.error)) {
-        shouldFetch = false;
-        return prev;
-      }
-      return {
-        ...prev,
-        [employeeId]: { loading: true, questions: prev[employeeId]?.questions ?? [] },
-      };
-    });
-    if (!shouldFetch) return;
-
-    try {
-      const res = await fetch(
-        `/api/admin/employees/mapping-questions?employeeId=${encodeURIComponent(employeeId)}`
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to load assigned questions");
-
-      setAssignedQuestionsByEmployee((prev) => ({
-        ...prev,
-        [employeeId]: { loading: false, questions: data.assigned_questions ?? [] },
-      }));
-    } catch (err: any) {
-      setAssignedQuestionsByEmployee((prev) => ({
-        ...prev,
-        [employeeId]: { loading: false, questions: [], error: err.message },
-      }));
-    }
-  };
-
   const loadTestAttemptDetails = async (testId: string) => {
     let shouldFetch = true;
     setTestAttemptDetails((prev) => {
@@ -1921,27 +2042,6 @@ export default function AdminDashboard() {
       }));
     }
   };
-
-  useEffect(() => {
-    for (const account of resourcePortalEmployees) {
-      if (expandedEmployees[account.employee_id]) {
-        if (
-          !(account.assigned_questions?.length) &&
-          !assignedQuestionsByEmployee[account.employee_id]?.questions?.length
-        ) {
-          loadAssignedQuestions(account.employee_id);
-        }
-        if (
-          account.test_status === "completed"
-        ) {
-          const completedTestId =
-            account.tests?.find((test: any) => test.status === "completed")?.id ??
-            account.test_id;
-          if (completedTestId) loadTestAttemptDetails(completedTestId);
-        }
-      }
-    }
-  }, [expandedEmployees, resourcePortalEmployees]);
 
   const isDashboardBootstrapping = !dashboardReady;
   const isEmployeeDataPending =
@@ -2010,8 +2110,73 @@ export default function AdminDashboard() {
     }
   }, [portalCompletedDateFilter, portalCompletedDateModel]);
 
+  const portalProductOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    let hasBlank = false;
+    for (const account of resourcePortalEmployees) {
+      const raw = String(account.product || "").trim();
+      if (!raw) {
+        hasBlank = true;
+        continue;
+      }
+      const key = raw.toLowerCase();
+      if (!seen.has(key)) seen.set(key, raw);
+    }
+    const options = Array.from(seen.values()).sort((a, b) =>
+      formatProductDisplayName(a).localeCompare(formatProductDisplayName(b), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      })
+    );
+    return { options, hasBlank };
+  }, [resourcePortalEmployees]);
+
+  const portalDomainOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    let hasBlank = false;
+    for (const account of resourcePortalEmployees) {
+      const raw = String(account.domain || "").trim();
+      if (!raw) {
+        hasBlank = true;
+        continue;
+      }
+      const key = raw.toLowerCase();
+      if (!seen.has(key)) seen.set(key, raw);
+    }
+    const options = Array.from(seen.values()).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+    );
+    return { options, hasBlank };
+  }, [resourcePortalEmployees]);
+
+  useEffect(() => {
+    if (portalProductFilter === "all") return;
+    if (portalProductFilter === "__none__") {
+      if (!portalProductOptions.hasBlank) setPortalProductFilter("all");
+      return;
+    }
+    const stillPresent = portalProductOptions.options.some(
+      (product) => product.toLowerCase() === portalProductFilter
+    );
+    if (!stillPresent) setPortalProductFilter("all");
+  }, [portalProductFilter, portalProductOptions]);
+
+  useEffect(() => {
+    if (portalDomainFilter === "all") return;
+    if (portalDomainFilter === "__none__") {
+      if (!portalDomainOptions.hasBlank) setPortalDomainFilter("all");
+      return;
+    }
+    const stillPresent = portalDomainOptions.options.some(
+      (domain) => domain.toLowerCase() === portalDomainFilter
+    );
+    if (!stillPresent) setPortalDomainFilter("all");
+  }, [portalDomainFilter, portalDomainOptions]);
+
   const filteredPortalEmployees = useMemo(() => {
     const term = testResultsSearch.trim().toLowerCase();
+    const productKey = portalProductFilter.trim().toLowerCase();
+    const domainKey = portalDomainFilter.trim().toLowerCase();
     const filtered = resourcePortalEmployees.filter((account) => {
       if (!matchesPortalTestStatusFilter(account.test_status, testStatusFilter)) {
         return false;
@@ -2019,6 +2184,22 @@ export default function AdminDashboard() {
       if (portalCompletedDateFilter !== "all") {
         const day = portalCompletedDayKey(portalPrimaryCompletedAt(account));
         if (!matchesPortalCompletedDateFilter(day, portalCompletedDateFilter)) return false;
+      }
+      if (productKey && productKey !== "all") {
+        const accountProduct = String(account.product || "").trim();
+        if (productKey === "__none__") {
+          if (accountProduct) return false;
+        } else if (accountProduct.toLowerCase() !== productKey) {
+          return false;
+        }
+      }
+      if (domainKey && domainKey !== "all") {
+        const accountDomain = String(account.domain || "").trim();
+        if (domainKey === "__none__") {
+          if (accountDomain) return false;
+        } else if (accountDomain.toLowerCase() !== domainKey) {
+          return false;
+        }
       }
       if (!term) return true;
       return (
@@ -2041,7 +2222,46 @@ export default function AdminDashboard() {
       if (nameCmp !== 0) return nameCmp;
       return String(a.employee_id || "").localeCompare(String(b.employee_id || ""), undefined, { numeric: true });
     });
-  }, [resourcePortalEmployees, testResultsSearch, testStatusFilter, portalCompletedDateFilter]);
+  }, [
+    resourcePortalEmployees,
+    testResultsSearch,
+    testStatusFilter,
+    portalCompletedDateFilter,
+    portalProductFilter,
+    portalDomainFilter,
+  ]);
+  const portalTestAverages = useMemo(() => {
+    const totals = new Map<string, { sum: number; count: number }>();
+    for (const account of resourcePortalEmployees) {
+      const employeeKey = normalizeEmployeeId(account.employee_id);
+      if (!employeeKey) continue;
+      const tests = Array.isArray(account.tests) ? account.tests : [];
+      for (const test of tests) {
+        if (mapBackendTestStatus(test.status) !== "completed" || test.score == null) continue;
+        const score = Number(test.score);
+        const max = Number(test.scoreMax ?? test.totalQuestions ?? 25);
+        if (!Number.isFinite(score) || !Number.isFinite(max) || max <= 0) continue;
+        const percentage = portalScorePercent(score, max);
+        if (percentage == null) continue;
+        const total = totals.get(employeeKey) || { sum: 0, count: 0 };
+        total.sum += percentage;
+        total.count += 1;
+        totals.set(employeeKey, total);
+      }
+    }
+    const averages = new Map<string, number>();
+    for (const [employeeKey, total] of totals) {
+      averages.set(employeeKey, total.sum / total.count);
+    }
+    return averages;
+  }, [resourcePortalEmployees]);
+  const portalPageRows = useMemo(
+    () => getPageItems(filteredPortalEmployees, portalPage, adminListPageSize),
+    [filteredPortalEmployees, portalPage, adminListPageSize]
+  );
+  useEffect(() => {
+    setPortalPage(1);
+  }, [testStatusFilter, portalCompletedDateFilter, portalProductFilter, portalDomainFilter]);
 
   const portalDateOnlyMatchCount = useMemo(() => {
     if (portalCompletedDateFilter === "all") return 0;
@@ -2056,27 +2276,20 @@ export default function AdminDashboard() {
   const hasActivePortalFilters =
     Boolean(testResultsSearch.trim()) ||
     testStatusFilter !== "all" ||
-    portalCompletedDateFilter !== "all";
+    portalCompletedDateFilter !== "all" ||
+    portalProductFilter !== "all" ||
+    portalDomainFilter !== "all";
 
   const clearPortalFilters = () => {
     setTestResultsSearch("");
+    setTestResultsSearchDraft("");
+    setPortalPage(1);
     setTestStatusFilter("all");
+    setPortalProductFilter("all");
+    setPortalDomainFilter("all");
     setPortalCompletedDateFilter("all");
     setPortalCompletedDateMenu({ type: "root" });
   };
-
-  const selectedPortalVideoTargets = useMemo(() => {
-    return selectedPortalEmployeeIds
-      .map((id) => {
-        const account = resourcePortalEmployees.find((entry) => entry.employee_id === id);
-        if (!account) return null;
-        const videoTest = portalVideoTest(account);
-        return videoTest?.hasVideo
-          ? { employeeId: id, testId: videoTest.testId }
-          : null;
-      })
-      .filter(Boolean) as Array<{ employeeId: string; testId: string }>;
-  }, [selectedPortalEmployeeIds, resourcePortalEmployees]);
 
   const handleTogglePortalEmployeeSelect = (id: string) => {
     setSelectedPortalEmployeeIds((prev) =>
@@ -2096,80 +2309,11 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleBulkDeletePortalVideos = () => {
-    if (selectedPortalVideoTargets.length === 0) return;
-    setDeleteTargetId("bulk-portal-videos");
+  const handleBulkDeletePortalEmployees = () => {
+    if (selectedPortalEmployeeIds.length === 0) return;
+    setDeleteTargetId("bulk-portal-employees");
     setDeletePasswordInput("");
     setDeleteModalError(null);
-  };
-
-  const handleBulkDownloadPortalVideos = async () => {
-    if (selectedPortalVideoTargets.length === 0 || isBulkPortalDownloading) return;
-    setIsBulkPortalDownloading(true);
-    setBulkPortalDownloadProgress({ current: 0, total: selectedPortalVideoTargets.length });
-    setActionError(null);
-    setActionSuccess(null);
-    try {
-      const JSZip = (await import("jszip")).default;
-      const zip = new JSZip();
-      const usedNames = new Set<string>();
-      let downloaded = 0;
-      let skipped = 0;
-
-      for (const target of selectedPortalVideoTargets) {
-        const account = resourcePortalEmployees.find(
-          (entry) => entry.employee_id === target.employeeId
-        );
-        const employeeName = account ? portalEmployeeName(account) : target.employeeId;
-        try {
-          const { blob, fileName } = await fetchTestVideoBlob(
-            target.testId,
-            target.employeeId,
-            employeeName
-          );
-          let uniqueName = fileName;
-          if (usedNames.has(uniqueName)) {
-            const base = fileName.replace(/\.webm$/i, "");
-            uniqueName = `${base}-${sanitizeDownloadPart(target.testId) || "test"}.webm`;
-          }
-          usedNames.add(uniqueName);
-          zip.file(uniqueName, blob);
-          downloaded += 1;
-        } catch {
-          skipped += 1;
-        }
-        setBulkPortalDownloadProgress({
-          current: downloaded + skipped,
-          total: selectedPortalVideoTargets.length,
-        });
-      }
-
-      if (downloaded === 0) {
-        throw new Error("Could not download any selected recordings.");
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `employee_portal_videos_${new Date().toISOString().split("T")[0]}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      setActionSuccess(
-        skipped > 0
-          ? `Downloaded ${downloaded} video(s) as a ZIP. ${skipped} skipped (no recording or not found). Open WebM files in Chrome/Edge or VLC.`
-          : `Downloaded ${downloaded} video(s) as a ZIP. Open WebM files in Chrome/Edge or VLC — Windows Media Player does not support WebM.`
-      );
-      setTimeout(() => setActionSuccess(null), 5000);
-    } catch (err: any) {
-      setActionError(err.message || "Failed to download selected videos.");
-    } finally {
-      setIsBulkPortalDownloading(false);
-      setBulkPortalDownloadProgress(null);
-    }
   };
 
   const buildPortalMailRecipients = (employeeIds: string[]) => {
@@ -2218,9 +2362,23 @@ export default function AdminDashboard() {
       if (!response.ok) {
         throw new Error(data.error || "Failed to send assessment invitation.");
       }
-      setActionSuccess(
-        `Assessment invitation sent to ${portalEmployeeName(account)} (${account.email}).`
-      );
+      const row = Array.isArray(data.dispatched) ? data.dispatched[0] : null;
+      const sendStatus = String(row?.status || "").toLowerCase();
+      if (sendStatus === "sent") {
+        setActionSuccess(
+          `Assessment invitation sent to ${portalEmployeeName(account)} (${account.email}).`
+        );
+      } else if (sendStatus.includes("failed")) {
+        setActionError(
+          row?.error
+            ? `Invite logged but SMTP send failed: ${row.error}`
+            : "Invite logged but SMTP send failed. Check SMTP settings on the API host."
+        );
+      } else {
+        setActionSuccess(
+          `Assessment invitation recorded for ${account.email} (simulated — SMTP not configured).`
+        );
+      }
       await loadEmails();
     } catch (err: any) {
       setActionError(err.message || "Failed to send assessment invitation.");
@@ -2252,9 +2410,24 @@ export default function AdminDashboard() {
       if (!response.ok) {
         throw new Error(data.error || "Failed to send assessment invitations.");
       }
-      setActionSuccess(
-        `Assessment invitation sent to ${data.count} selected employee(s).`
-      );
+      const rows = Array.isArray(data.dispatched) ? data.dispatched : [];
+      const sent = rows.filter((r: { status?: string }) => String(r.status || "").toLowerCase() === "sent").length;
+      const failed = rows.filter((r: { status?: string }) => String(r.status || "").toLowerCase().includes("failed")).length;
+      if (failed && !sent) {
+        setActionError(
+          `SMTP send failed for ${failed} invite(s). Check SMTP settings on the API host.`
+        );
+      } else if (failed) {
+        setActionSuccess(
+          `Sent ${sent} invite(s); ${failed} failed SMTP delivery (logged in outbox).`
+        );
+      } else if (sent) {
+        setActionSuccess(`Assessment invitation sent to ${sent} selected employee(s).`);
+      } else {
+        setActionSuccess(
+          `Recorded ${data.count || rows.length} invite(s) as simulated — SMTP is not configured on the API.`
+        );
+      }
       await loadEmails();
     } catch (err: any) {
       setActionError(err.message || "Failed to send assessment invitations.");
@@ -2291,19 +2464,20 @@ export default function AdminDashboard() {
   const handleResetEmployeeTestClick = (
     testId: string | null,
     employeeId: string,
-    employeeName: string
+    employeeName: string,
+    testTitle: string
   ) => {
     if (!testId) {
       setActionError("No assigned test found for this employee.");
       return;
     }
-    setResetTargetEmployee({ testId, employeeId, employeeName });
+    setResetTargetEmployee({ testId, employeeId, employeeName, testTitle });
   };
 
   const handleConfirmResetEmployeeTest = async () => {
     if (!resetTargetEmployee) return;
 
-    const { testId, employeeId } = resetTargetEmployee;
+    const { testId, employeeId, testTitle } = resetTargetEmployee;
     setResetTargetEmployee(null);
     setResettingTestId(testId);
     setActionError(null);
@@ -2317,10 +2491,15 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to reset test");
-      setActionSuccess(`Previous attempt saved for review. Test reset for employee ${employeeId}.`);
+      setActionSuccess(`Previous attempt saved for review. ${testTitle} reset for employee ${employeeId}.`);
       setTestAttemptDetails((prev) => {
         const next = { ...prev };
         delete next[testId];
+        return next;
+      });
+      setSelectedResetTestByEmployee((prev) => {
+        const next = { ...prev };
+        delete next[employeeId];
         return next;
       });
       await loadEmployees({ fresh: true });
@@ -2329,6 +2508,137 @@ export default function AdminDashboard() {
     } finally {
       setResettingTestId(null);
     }
+  };
+
+  const handleResetPortalEmployeePassword = (account: {
+    employee_id: string;
+    email?: string | null;
+    full_name?: string | null;
+  }) => {
+    if (!account.email) {
+      setActionError("Cannot reset this employee's password: no email address is on file.");
+      return;
+    }
+    setResetPortalPasswordTarget({
+      employeeId: account.employee_id,
+      employeeName: portalEmployeeName(account),
+      email: account.email,
+    });
+  };
+
+  const handleConfirmResetPortalEmployeePassword = async () => {
+    if (!resetPortalPasswordTarget) return;
+    const target = resetPortalPasswordTarget;
+    setResetPortalPasswordTarget(null);
+    setResettingPortalPasswordEmployeeId(target.employeeId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(
+        `/api/admin/employee-portal/users/${encodeURIComponent(target.employeeId)}/reset-password`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to reset employee password.");
+      if (!data.emailSent) {
+        setActionError(data.message || `Password reset, but the notification email could not be sent to ${target.email}.`);
+        return;
+      }
+      setActionSuccess(`Password reset for ${target.employeeName}. A temporary password was emailed to ${target.email}.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to reset employee password.");
+    } finally {
+      setResettingPortalPasswordEmployeeId(null);
+    }
+  };
+
+  const handleUpdatePortalEmployee = async (
+    employeeId: string,
+    field: "name" | "email" | "designation" | "department" | "product",
+    value: string
+  ) => {
+    const nextValue = value.trim();
+    if (["name", "email", "product"].includes(field) && !nextValue) {
+      setActionError(`${field === "name" ? "Name" : field === "email" ? "Email" : "Product"} cannot be empty.`);
+      setTimeout(() => setActionError(null), 4000);
+      return;
+    }
+    if (field === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextValue)) {
+      setActionError("Enter a valid email address.");
+      setTimeout(() => setActionError(null), 4000);
+      return;
+    }
+    setSavingPortalEmployeeId(employeeId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(
+        `/api/admin/employee-portal/users/${encodeURIComponent(employeeId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: nextValue }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to update employee details.");
+      setEditingEmployeeKey(null);
+      setActionSuccess(`Employee ${field} updated for ${employeeId}. Assessment scores were not changed.`);
+      await loadEmployees({ fresh: true });
+    } catch (err: any) {
+      setActionError(err.message || "Failed to update employee details.");
+    } finally {
+      setSavingPortalEmployeeId(null);
+    }
+  };
+
+  const renderPortalEditableCell = (
+    account: any,
+    field: "name" | "email" | "designation" | "department" | "product",
+    value: string,
+    display: React.ReactNode,
+    className: string
+  ) => {
+    const employeeId = String(account.employee_id || "");
+    const editorKey = `${employeeId}:portal:${field}`;
+    if (editingEmployeeKey === editorKey) {
+      return (
+        <InlineCellEditor
+          value={editingEmployeeValue}
+          type={field === "email" ? "email" : "text"}
+          className="w-full min-w-20 p-1 text-[10px] font-semibold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
+          onSave={(next) => handleUpdatePortalEmployee(employeeId, field, next)}
+          onCancel={() => setEditingEmployeeKey(null)}
+        />
+      );
+    }
+
+    return (
+      <div className="group flex min-w-0 items-center gap-1">
+        <span className={`${className} min-w-0 truncate`} title={String(display || "")}>
+          {display || "—"}
+        </span>
+        {account.product_qb_eligible ? (
+          <button
+            type="button"
+            disabled={savingPortalEmployeeId === employeeId}
+            onClick={() => {
+              setEditingEmployeeKey(editorKey);
+              setEditingEmployeeValue(value);
+            }}
+            className="shrink-0 rounded p-0.5 text-slate-400 opacity-0 transition-opacity group-hover:opacity-100 hover:text-indigo-600 disabled:opacity-40 dark:hover:text-indigo-400"
+            title={`Edit ${field}`}
+            aria-label={`Edit employee ${field}`}
+          >
+            {savingPortalEmployeeId === employeeId ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Edit2 className="h-3 w-3" />
+            )}
+          </button>
+        ) : null}
+      </div>
+    );
   };
 
   const handleDeleteEmployeeVideo = (
@@ -2551,22 +2861,63 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleExportPortalSummary = async () => {
+    if (isExportingPortalSummary) return;
+    setIsExportingPortalSummary(true);
+    setActionError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/employees/export-portal-summary?email=${encodeURIComponent(adminEmail)}`
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Summary export failed");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `employee_portal_summary_${new Date().toISOString().split("T")[0]}.xlsx`;
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setActionSuccess("Portal summary downloaded.");
+      setTimeout(() => setActionSuccess(null), 3000);
+    } catch (summaryErr: any) {
+      console.error("Failed to export portal summary:", summaryErr);
+      setActionError(summaryErr.message || "Failed to export portal summary");
+      setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setIsExportingPortalSummary(false);
+    }
+  };
+
   const isCloudDocsIngest = process.env.NEXT_PUBLIC_CLOUD_DOCS_INGEST === "1";
 
   const loadLogs = async () => {
     if (!readAdminAccessFlags().permissions.systemLogs) return;
     setIsSystemLogsLoading(true);
     try {
-      const moduleParam = logsModuleFilter;
-      const statusParam = logsStatusFilter;
-      const searchParam = encodeURIComponent(logsSearch);
-      const data = await fetchJsonWithRetry(
-        `/api/admin/logs?module=${moduleParam}&status=${statusParam}&search=${searchParam}`,
-        { timeoutMs: 30000, retries: 2, label: "logs" }
-      );
+      const params = new URLSearchParams({
+        module: logsModuleFilter,
+        status: logsStatusFilter,
+        level: logsLevelFilter === "all" ? "" : logsLevelFilter,
+        user: logsUserFilter,
+        from: logsFromFilter,
+        to: logsToFilter,
+        search: logsSearch,
+      });
+      const [data, metrics] = await Promise.all([
+        fetchJsonWithRetry(`/api/admin/logs?${params}`, { timeoutMs: 30000, retries: 2, label: "logs" }),
+        fetchJsonWithRetry("/api/admin/logs/metrics", { timeoutMs: 30000, retries: 1, label: "log metrics" }),
+      ]);
       if (Array.isArray(data?.logs)) {
         setSystemLogs(data.logs);
         setSystemLogsTotal(typeof data.total === "number" ? data.total : data.logs.length);
+        if (metrics && typeof metrics === "object") setLogMetrics(metrics);
       } else {
         console.warn("[admin] logs payload missing/timed out; keeping prior state");
       }
@@ -3085,28 +3436,14 @@ export default function AdminDashboard() {
 
   const handleUpdateCorpPoolEmployee = async (
     employeeId: string,
-    field: "full_name" | "employee_id" | "department" | "skills" | "designation" | "score",
+    field: "full_name" | "employee_id" | "department" | "skills" | "designation",
     value: string
   ) => {
-    const updates: Record<string, string | number> = {};
-    if (field === "score") {
-      const parsed = Number(String(value).replace(/%/g, "").trim());
-      if (!Number.isFinite(parsed)) {
-        setActionError("Score must be a number between 0 and 100.");
-        setTimeout(() => setActionError(null), 4000);
-        return;
-      }
-      updates.score = parsed;
-      if (selectedJdId && selectedJdId !== "all" && !selectedJdId.includes("@")) {
-        updates.score_override_jd_id = selectedJdId;
-      }
-    } else {
-      updates[field] = value.trim();
-      if (field !== "skills" && field !== "department" && !updates[field]) {
-        setActionError("This field cannot be empty.");
-        setTimeout(() => setActionError(null), 4000);
-        return;
-      }
+    const updates: Record<string, string> = { [field]: value.trim() };
+    if (field !== "skills" && field !== "department" && !updates[field]) {
+      setActionError("This field cannot be empty.");
+      setTimeout(() => setActionError(null), 4000);
+      return;
     }
     try {
       const res = await adminFetch("/api/admin/employees", {
@@ -3241,13 +3578,15 @@ export default function AdminDashboard() {
 
   const handleDownloadSystemLogs = async () => {
     try {
-      const res = await adminFetch(`/api/admin/logs?module=${logsModuleFilter}&download=true`);
+      const res = await adminFetch(
+        `/api/admin/logs?module=${encodeURIComponent(logsModuleFilter)}&format=${logsExportFormat}&status=${logsStatusFilter}&level=${logsLevelFilter === "all" ? "" : logsLevelFilter}&user=${encodeURIComponent(logsUserFilter)}&from=${logsFromFilter}&to=${logsToFilter}&search=${encodeURIComponent(logsSearch)}`
+      );
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `system-logs-${logsModuleFilter}.txt`;
+      link.download = `system-logs-${logsModuleFilter}.${logsExportFormat}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -3359,7 +3698,7 @@ export default function AdminDashboard() {
 
   const handleResetEmailSessionClick = () => {
     const email = resetEmailInput.trim().toLowerCase();
-    if (!email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setActionError("Please enter a valid candidate email address to reset.");
       return;
     }
@@ -3381,8 +3720,8 @@ export default function AdminDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, adminEmail }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to reset session");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.message || "Failed to reset session");
 
       setActionSuccess(`Session for candidate ${email} has been reset and reactivated.`);
       setTimeout(() => setActionSuccess(null), 5000);
@@ -4146,6 +4485,30 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleResetCandidatePassword = async (resume: any) => {
+    const email = String(resume.parsed?.personal?.email || "").trim();
+    if (!email || !window.confirm(`Email a new 12-character temporary password to ${email}? Their current password will stop working.`)) {
+      return;
+    }
+
+    setActionLoading(`reset-password-${resume.id}`);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      const response = await fetch(`/api/admin/resumes/${resume.id}/reset-password`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Failed to reset candidate password.");
+      await loadEmails();
+      setActionSuccess(`A new temporary password was emailed to ${email}.`);
+      setTimeout(() => setActionSuccess(null), 5000);
+    } catch (error: any) {
+      setActionError(error.message || "Failed to reset candidate password.");
+      setTimeout(() => setActionError(null), 5000);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleConfirmSendInvite = async () => {
     if (!inviteTargetResume) return;
     const resume = inviteTargetResume;
@@ -4199,9 +4562,32 @@ export default function AdminDashboard() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to dispatch invite email");
 
+      if (String(data.status || "").toLowerCase() === "sent") {
+        setResumes((prev) => prev.map((item) =>
+          item.id === resume.id
+            ? { ...item, report: { ...(item.report || {}), inviteEmailStatus: "sent" } }
+            : item
+        ));
+      }
       await loadEmails();
-      setActionSuccess(`Invitation email simulated & dispatched to ${email}! Secure assessment access is unlocked.`);
-      setTimeout(() => setActionSuccess(null), 5000);
+      const sendStatus = String(data.status || "").toLowerCase();
+      if (sendStatus === "sent") {
+        setActionSuccess(`Invitation email sent to ${email}. Secure assessment access is unlocked.`);
+      } else if (sendStatus.includes("failed")) {
+        setActionError(
+          data.error
+            ? `Invite logged but SMTP send failed for ${email}: ${data.error}`
+            : `Invite logged but SMTP send failed for ${email}. Check SMTP settings on the API host.`
+        );
+      } else {
+        setActionSuccess(
+          `Invitation recorded for ${email} (simulated — SMTP is not configured on the API).`
+        );
+      }
+      setTimeout(() => {
+        setActionSuccess(null);
+        setActionError(null);
+      }, 6000);
     } catch (error: any) {
       setActionError(error.message || "Failed to dispatch invite email.");
       setTimeout(() => setActionError(null), 5000);
@@ -4391,36 +4777,24 @@ export default function AdminDashboard() {
       return;
     }
 
-    if (targetId === "bulk-portal-videos") {
-      setActionLoading("bulk-portal-videos");
+    if (targetId === "bulk-portal-employees") {
+      setActionLoading("bulk-portal-employees");
       setActionError(null);
       try {
-        const response = await fetch("/api/admin/employees/delete-video", {
-          method: "POST",
+        const idsToDelete = [...selectedPortalEmployeeIds];
+        const response = await fetch("/api/admin/employees/portal", {
+          method: "DELETE",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: selectedPortalVideoTargets }),
+          body: JSON.stringify({ employeeIds: idsToDelete }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to delete proctoring videos");
-
-        const deletedCount = data.deletedCount ?? selectedPortalVideoTargets.length;
-        const skippedCount = data.skippedCount ?? 0;
-        setActionSuccess(
-          skippedCount > 0
-            ? `${deletedCount} proctoring video(s) deleted. ${skippedCount} skipped (no recording or not found).`
-            : `${deletedCount} proctoring video(s) deleted successfully. Scores and test status unchanged.`
-        );
+        if (!response.ok) throw new Error(data.error || "Failed to delete selected employees");
+        setActionSuccess(`${data.deleted} employee portal account(s) and linked data deleted successfully.`);
         setSelectedPortalEmployeeIds([]);
         setTimeout(() => setActionSuccess(null), 4000);
-        if (videoPreview?.testId && selectedPortalVideoTargets.some((item) => item.testId === videoPreview.testId)) {
-          if (videoPreview.url?.startsWith("blob:")) {
-            URL.revokeObjectURL(videoPreview.url);
-          }
-          setVideoPreview(null);
-        }
         await loadEmployees({ fresh: true });
       } catch (error: any) {
-        setActionError(error.message || "Failed to delete proctoring videos.");
+        setActionError(error.message || "Failed to delete selected employees.");
       } finally {
         setActionLoading(null);
       }
@@ -4473,7 +4847,7 @@ export default function AdminDashboard() {
         } else {
           setEmails((prev) => prev.filter((item) => item.id !== emailId));
         }
-        setActionSuccess("Simulated invitation email log deleted successfully.");
+        setActionSuccess("Invitation email log deleted successfully.");
         setTimeout(() => setActionSuccess(null), 3000);
       } catch (error: any) {
         setActionError(error.message || "Failed to delete email log.");
@@ -4758,7 +5132,7 @@ export default function AdminDashboard() {
           matchRationale: row.report?.jdMatchRationale || "",
         };
       }
-      const result = calculateSkillMatch(candidateMatchText(row), jdText);
+      const result = calculateCandidateMatch(row, jdText);
       return {
         ...row,
         score: Number(result.score) || 0,
@@ -4863,11 +5237,15 @@ export default function AdminDashboard() {
     return orderedJds;
   }, [filteredJds, requirementSearch, requirementDateFilter, requirementSkillFilter, pinnedJdId]);
 
+  const requirementPageRows = useMemo(
+    () => getPageItems(visibleRequirementRows, requirementPage, adminListPageSize),
+    [visibleRequirementRows, requirementPage, adminListPageSize]
+  );
   const visibleRequirementIds = visibleRequirementRows.map((row) => row.jd.id);
 
   const requirementUploadGroups = useMemo(() => {
-    const groups = new Map<string, typeof visibleRequirementRows>();
-    for (const row of visibleRequirementRows) {
+    const groups = new Map<string, typeof requirementPageRows>();
+    for (const row of requirementPageRows) {
       const key = uploadGroupKey(row.isDuplicate && row.ogJd ? row.ogJd : row.jd);
       const list = groups.get(key) || [];
       list.push(row);
@@ -4880,7 +5258,7 @@ export default function AdminDashboard() {
       label: labels.get(key) || uploadGroupDayLabel(key),
       rows: groups.get(key) || [],
     }));
-  }, [visibleRequirementRows]);
+  }, [requirementPageRows]);
 
   const handleToggleJdSelect = (id: string) => {
     setSelectedJdIds((prev) =>
@@ -5004,6 +5382,10 @@ export default function AdminDashboard() {
       skills.toLowerCase().includes(term)
     );
   });
+  const candidatePageRows = useMemo(
+    () => getPageItems(candidatesToRender, candidatePage, adminListPageSize),
+    [candidatesToRender, candidatePage, adminListPageSize]
+  );
 
   const compiledSelectedJd = useMemo(() => {
     const jdText = jdSavedText.trim();
@@ -5019,15 +5401,26 @@ export default function AdminDashboard() {
   const scoredEmployees = useMemo(() => {
     if (!compiledSelectedJd) return employees;
     return employees.map((emp) => {
+      const profileText = employeeMatchText(emp);
+      const years = profileExperienceYears(
+        emp.experience,
+        emp.yearsExperience ?? emp.years_experience,
+        profileText
+      );
       const result = calculateSkillMatch(
-        employeeMatchText(emp),
+        profileText,
         compiledSelectedJd.jdText,
-        compiledSelectedJd
+        compiledSelectedJd,
+        years
       );
       const computed = Number(result.score) || 0;
       const override = scoreOverrideForJd(emp, selectedJdId);
       const overridden = override != null;
-      const score = overridden ? override : computed;
+      const score = overridden
+        ? result.strictRequirementsPassed
+          ? override
+          : Math.min(override, computed)
+        : computed;
       return {
         ...emp,
         score,
@@ -5036,7 +5429,7 @@ export default function AdminDashboard() {
         requiredCount: result.requiredCount,
         matchDecision: overridden ? decisionFromScore(score) : result.decision,
         matchRationale: overridden
-          ? `${emp.llm_rationale || result.rationale}${emp.llm_best_jd ? ` Best seat: ${emp.llm_best_jd}.` : ""}`
+          ? `${!result.strictRequirementsPassed && override > computed ? `Admin score override capped at ${computed}% by JD hard requirements. ` : `Admin score ${score}%. `}${emp.llm_rationale || result.rationale}${emp.llm_best_jd ? ` Best seat: ${emp.llm_best_jd}.` : ""}`
           : result.rationale,
         familyRelation: result.familyRelation,
       };
@@ -5076,7 +5469,13 @@ export default function AdminDashboard() {
         scoreParts: null as ScoreParts | null,
       };
     }
-    const result = calculateSkillMatch(employeeMatchText(activeEmployee), jdText);
+    const profileText = employeeMatchText(activeEmployee);
+    const years = profileExperienceYears(
+      activeEmployee.experience,
+      activeEmployee.yearsExperience ?? activeEmployee.years_experience,
+      profileText
+    );
+    const result = calculateSkillMatch(profileText, jdText, undefined, years);
     const required = result.skillBreakdown.map((row) => row.skill);
     const matched = result.skillBreakdown
       .filter((row) => row.scoring && (row.status === "strong" || row.status === "solid"))
@@ -5086,7 +5485,12 @@ export default function AdminDashboard() {
       .map((row) => row.skill);
     const overriddenScore = scoreOverrideForJd(activeEmployee, selectedJdId);
     const overridden = overriddenScore != null;
-    const score = overridden ? overriddenScore : Number(result.score) || 0;
+    const computedScore = Number(result.score) || 0;
+    const score = overridden
+      ? result.strictRequirementsPassed
+        ? overriddenScore
+        : Math.min(overriddenScore, computedScore)
+      : computedScore;
     return {
       personSkills,
       matched,
@@ -5095,7 +5499,7 @@ export default function AdminDashboard() {
       score,
       decision: overridden ? decisionFromScore(score) : result.decision,
       rationale: overridden
-        ? `Admin score ${score}%. ${result.rationale}`
+        ? `${!result.strictRequirementsPassed && overriddenScore > computedScore ? `Admin score override capped at ${computedScore}% by JD hard requirements. ` : `Admin score ${score}%. `}${result.rationale}`
         : result.rationale,
       matchedCount: result.matchedCount,
       requiredCount: result.requiredCount,
@@ -5128,14 +5532,25 @@ export default function AdminDashboard() {
 
   const selectedPoolIdSet = useMemo(() => new Set(selectedPool?.ids || []), [selectedPool]);
 
+  const corpPoolOrderedEmployees = useMemo(() => {
+    if (!selectedPoolIdSet.size) return filteredEmployees;
+    return [
+      ...filteredEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id)),
+      ...filteredEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id)),
+    ];
+  }, [filteredEmployees, selectedPoolIdSet]);
+  const corpPoolPageEmployees = useMemo(
+    () => getPageItems(corpPoolOrderedEmployees, corpPoolPage, adminListPageSize),
+    [corpPoolOrderedEmployees, corpPoolPage, adminListPageSize]
+  );
   const corpPoolEmployeeGroups = useMemo(() => {
     const poolEmployees = selectedPoolIdSet.size
-      ? filteredEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id))
+      ? corpPoolPageEmployees.filter((emp) => selectedPoolIdSet.has(emp.employee_id))
       : [];
     const restEmployees = selectedPoolIdSet.size
-      ? filteredEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id))
-      : filteredEmployees;
-    const groups = new Map<string, typeof filteredEmployees>();
+      ? corpPoolPageEmployees.filter((emp) => !selectedPoolIdSet.has(emp.employee_id))
+      : corpPoolPageEmployees;
+    const groups = new Map<string, typeof corpPoolPageEmployees>();
     for (const emp of restEmployees) {
       const key = uploadGroupKey(emp);
       const list = groups.get(key) || [];
@@ -5162,7 +5577,7 @@ export default function AdminDashboard() {
       ];
     }
     return restGroups;
-  }, [filteredEmployees, selectedPool, selectedPoolIdSet]);
+  }, [corpPoolPageEmployees, selectedPool, selectedPoolIdSet]);
 
   const shortlistedCount = scoredEmployees.filter((emp) => emp.shortlisted).length;
   const selectedUnshortlistedIds = selectedEmployeeIds.filter((id) =>
@@ -5316,6 +5731,10 @@ export default function AdminDashboard() {
       status.toLowerCase().includes(term)
     );
   });
+  const outboxPageRows = useMemo(
+    () => getPageItems(emailsToRender, outboxPage, adminListPageSize),
+    [emailsToRender, outboxPage, adminListPageSize]
+  );
 
   if (!authInitialized) {
     return <CenteredPageLoading label="Loading admin gateway" />;
@@ -5398,6 +5817,15 @@ export default function AdminDashboard() {
       {showAccessManager && canManagePortalConfig && (
         <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
       )}
+      {showEmployeePortalManager && canViewEmployeePortal && canManagePortalConfig && (
+        <EmployeePortalManager
+          onClose={() => {
+            setShowEmployeePortalManager(false);
+            void loadEmployees({ fresh: true, silent: true });
+          }}
+          fetcher={adminFetch}
+        />
+      )}
 
       <main className="max-w-full mx-auto px-6 py-8 space-y-8">
         
@@ -5428,11 +5856,11 @@ export default function AdminDashboard() {
         <Card className="border-border/70 shadow-card bg-card rounded-2xl overflow-hidden flex flex-col">
               
               {/* Tab Header Navigation */}
-              <div className="flex overflow-x-auto scrollbar-none border-b border-border/70 bg-muted/40 shrink-0 w-full px-1 sm:px-2">
+              <div className="flex w-full shrink-0 flex-nowrap overflow-x-auto scrollbar-none border-b border-border/70 bg-muted/40 px-1 sm:px-2">
                 {adminPermissions.requirements && (
                 <button
                   onClick={() => setActiveTab("requirements")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "requirements"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
@@ -5440,7 +5868,7 @@ export default function AdminDashboard() {
                 >
                   <ClipboardList className="w-4 h-4 text-primary" />
                   Requirements (BR / JD)
-                  <Badge className={`border-0 text-[10px] ${activeTab === "requirements" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "requirements" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping || isJdLoading ? "…" : filteredJds.length}
                   </Badge>
                 </button>
@@ -5448,14 +5876,14 @@ export default function AdminDashboard() {
                 {adminPermissions.corpPool && (
                 <button
                   onClick={() => setActiveTab("employee")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "employee"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Corp Pool
-                  <Badge className={`border-0 text-[10px] ${activeTab === "employee" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "employee" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping && employees.length === 0 ? "…" : employees.length}
                   </Badge>
                 </button>
@@ -5463,14 +5891,14 @@ export default function AdminDashboard() {
                 {adminPermissions.candidates && (
                 <button
                   onClick={() => setActiveTab("suitable")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "suitable"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Suitable Candidates
-                  <Badge className={`border-0 text-[10px] ${activeTab === "suitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "suitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping || loading ? "…" : suitableCandidates.length}
                   </Badge>
                 </button>
@@ -5478,14 +5906,14 @@ export default function AdminDashboard() {
                 {adminPermissions.candidates && (
                 <button
                   onClick={() => setActiveTab("unsuitable")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "unsuitable"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Non-Suitable Candidates
-                  <Badge className={`border-0 text-[10px] ${activeTab === "unsuitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "unsuitable" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping || loading ? "…" : unsuitableCandidates.length}
                   </Badge>
                 </button>
@@ -5493,14 +5921,14 @@ export default function AdminDashboard() {
                 {adminPermissions.employeePortal && (
                 <button
                   onClick={() => setActiveTab("employee-portal")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "employee-portal"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   Employee Portal
-                  <Badge className={`border-0 text-[10px] ${activeTab === "employee-portal" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "employee-portal" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping && resourcePortalEmployees.length === 0
                       ? "…"
                       : resourcePortalEmployees.length ||
@@ -5511,7 +5939,7 @@ export default function AdminDashboard() {
                 {adminPermissions.emailOutbox && (
                 <button
                   onClick={() => setActiveTab("outbox")}
-                  className={`flex-1 min-w-0 py-3.5 px-2 sm:px-3 lg:px-4 font-semibold text-xs sm:text-sm transition-all duration-200 border-b-2 flex items-center justify-center gap-1.5 sm:gap-2 flex-shrink-0 whitespace-nowrap ${
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
                     activeTab === "outbox"
                       ? "border-primary text-foreground bg-card"
                       : "border-transparent text-muted-foreground hover:text-foreground"
@@ -5519,7 +5947,7 @@ export default function AdminDashboard() {
                 >
                   <Mail className="w-4 h-4 text-primary" />
                   Email Outbox
-                  <Badge className={`border-0 text-[10px] ${activeTab === "outbox" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                  <Badge className={`shrink-0 border-0 text-[10px] ${activeTab === "outbox" ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                     {isDashboardBootstrapping || isEmailsLoading ? "…" : emails.length}
                   </Badge>
                 </button>
@@ -5548,19 +5976,49 @@ export default function AdminDashboard() {
                   <div className="space-y-4">
                     {/* Search + filters */}
                     <div className="flex flex-col xl:flex-row gap-3 justify-between items-stretch xl:items-center shrink-0">
-                      <div className="w-full xl:flex-1 min-w-0 relative">
-                        <input
-                          type="text"
-                          placeholder="Search Requirements (BR / JD)..."
-                          value={requirementSearch}
-                          onChange={(e) => setRequirementSearch(e.target.value)}
-                          className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                        />
-                      </div>
+                      <form
+                        className="w-full xl:flex-1 min-w-0 flex gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          setRequirementSearch(requirementSearchDraft.trim());
+                          setRequirementPage(1);
+                        }}
+                      >
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            type="text"
+                            placeholder="Search Requirements (BR / JD)..."
+                            value={requirementSearchDraft}
+                            onChange={(e) => setRequirementSearchDraft(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                          />
+                          {(requirementSearchDraft || requirementSearch) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRequirementSearch("");
+                                setRequirementSearchDraft("");
+                                setRequirementPage(1);
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                              aria-label="Clear requirements search"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                          Search
+                        </Button>
+                      </form>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full xl:w-auto xl:min-w-[24rem]">
                         <select
                           value={requirementDateFilter}
-                          onChange={(e) => setRequirementDateFilter(e.target.value)}
+                          onChange={(e) => {
+                            setRequirementDateFilter(e.target.value);
+                            setRequirementPage(1);
+                          }}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                           aria-label="Filter requirements by created date"
                         >
@@ -5573,7 +6031,10 @@ export default function AdminDashboard() {
                         </select>
                         <select
                           value={requirementSkillFilter}
-                          onChange={(e) => setRequirementSkillFilter(e.target.value)}
+                          onChange={(e) => {
+                            setRequirementSkillFilter(e.target.value);
+                            setRequirementPage(1);
+                          }}
                           className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                           aria-label="Filter requirements by skill"
                         >
@@ -5918,6 +6379,8 @@ export default function AdminDashboard() {
                                               setJdSavedText(j.jdText);
                                               setJdText(j.jdText);
                                               setEmployeeSearch("");
+                                              setEmployeeSearchDraft("");
+                                              setCorpPoolPage(1);
                                               setActiveTab("employee");
                                               void fetch(
                                                 `/api/admin/refresh?type=sync-selected&activeJdId=${encodeURIComponent(j.id)}`,
@@ -6017,6 +6480,13 @@ export default function AdminDashboard() {
                         </table>
                       </div>
                     </div>
+                    <AdminListPagination
+                      page={requirementPage}
+                      total={visibleRequirementRows.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setRequirementPage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
                   </div>
                 ) : activeTab === "employee" ? (
                   <div className="space-y-4">
@@ -6061,21 +6531,51 @@ export default function AdminDashboard() {
                       </div>
 
                       {/* Search and export controls */}
-                      <div className="flex flex-col sm:flex-row gap-3 justify-between items-center shrink-0">
-                        <div className="w-full sm:w-auto flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
-                          <div className="w-full sm:w-72 relative">
-                            <input
-                              type="text"
-                              placeholder="Search Corp Pool..."
-                              value={employeeSearch}
-                              onChange={(e) => setEmployeeSearch(e.target.value)}
-                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                            />
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
+                      <div className="grid grid-cols-1 gap-3 items-start shrink-0 xl:grid-cols-[minmax(0,1fr)_auto]">
+                        <div className="min-w-0 flex flex-col gap-2">
+                          <form
+                            className="flex w-full min-w-0 gap-2 sm:w-auto sm:self-start"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              setEmployeeSearch(employeeSearchDraft.trim());
+                              setCorpPoolPage(1);
+                            }}
+                          >
+                            <div className="relative min-w-0 flex-1 sm:w-[36rem] sm:flex-none sm:max-w-[calc(100vw-10rem)]">
+                              <input
+                                type="text"
+                                placeholder="Search Corp Pool..."
+                                value={employeeSearchDraft}
+                                onChange={(e) => setEmployeeSearchDraft(e.target.value)}
+                                className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                              />
+                              {employeeSearchDraft || employeeSearch ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEmployeeSearch("");
+                                    setEmployeeSearchDraft("");
+                                    setCorpPoolPage(1);
+                                  }}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                  aria-label="Clear Corp Pool search"
+                                  title="Clear search"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              ) : null}
+                            </div>
+                            <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                              Search
+                            </Button>
+                          </form>
+                          <div className="flex flex-wrap items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => setCorpPoolListFilter("all")}
+                              onClick={() => {
+                                setCorpPoolListFilter("all");
+                                setCorpPoolPage(1);
+                              }}
                               className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                                 corpPoolListFilter === "all"
                                   ? "bg-violet-600 text-white shadow-sm shadow-violet-500/30"
@@ -6086,7 +6586,10 @@ export default function AdminDashboard() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => setCorpPoolListFilter("shortlisted")}
+                              onClick={() => {
+                                setCorpPoolListFilter("shortlisted");
+                                setCorpPoolPage(1);
+                              }}
                               className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
                                 corpPoolListFilter === "shortlisted"
                                   ? "bg-violet-600 text-white shadow-sm shadow-violet-500/30"
@@ -6095,9 +6598,19 @@ export default function AdminDashboard() {
                             >
                               Shortlisted ({shortlistedCount})
                             </button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowQuickSearch(true)}
+                              className="h-8 rounded-xl px-2.5 text-[10px] font-bold whitespace-nowrap"
+                            >
+                              <Search className="mr-1 h-3.5 w-3.5" />
+                              Quick Search
+                            </Button>
                           </div>
                         </div>
-                        <div className="flex gap-2 w-full sm:w-auto flex-wrap justify-end">
+                        <div className="flex w-full flex-wrap content-start justify-start gap-2 sm:w-auto sm:justify-end xl:max-w-[36rem] xl:border-l xl:border-border xl:pl-3 xl:justify-start">
                           {(selectedEmployeeIds.length > 0 || Boolean(selectedPool?.ids.length)) && (
                             <Button
                               size="sm"
@@ -6231,6 +6744,14 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
+                      <AdminListPagination
+                        page={corpPoolPage}
+                        total={filteredEmployees.length}
+                        pageSize={adminListPageSize}
+                        onPageChange={setCorpPoolPage}
+                        onPageSizeChange={handleAdminListPageSizeChange}
+                      />
+
                       {/* Employee Table */}
                       <div className="border border-border rounded-2xl overflow-hidden">
                         <div className="overflow-auto max-h-[500px]">
@@ -6249,6 +6770,12 @@ export default function AdminDashboard() {
                                 <th className="p-3">Employee ID</th>
                                 <th className="p-3">Department</th>
                                 <th className="p-3">Skills</th>
+                                <th
+                                  className="p-3 text-center whitespace-nowrap"
+                                  title="Average percentage across completed portal tests for the matching Employee ID."
+                                >
+                                  Employee Portal Tests (Avg)
+                                </th>
                                 <th className="p-3">Score</th>
                                 <th className="p-3 text-center">Shortlist</th>
                                 <th className="p-3 text-center">Actions</th>
@@ -6260,7 +6787,7 @@ export default function AdminDashboard() {
                                   {group.employees.length > 0 && (
                                     <UploadDateHeaderRow
                                       label={group.label}
-                                      colSpan={8}
+                                      colSpan={9}
                                       showDivider={groupIndex > 0}
                                       groupIds={group.employees.map((emp) => emp.employee_id)}
                                       selectedIds={selectedEmployeeIds}
@@ -6434,39 +6961,22 @@ export default function AdminDashboard() {
                                         </div>
                                       )}
                                     </td>
+                                    <td className="p-3 text-center font-semibold text-slate-500 whitespace-nowrap">
+                                      {portalTestAverages.has(normalizeEmployeeId(emp.employee_id))
+                                        ? `${Math.round(portalTestAverages.get(normalizeEmployeeId(emp.employee_id)) || 0)}%`
+                                        : "-"}
+                                    </td>
                                     <td className="p-3">
-                                      {editingEmployeeKey === `${emp.employee_id}:score` ? (
-                                        <InlineCellEditor
-                                          value={editingEmployeeValue}
-                                          className="w-16 p-1 text-[10px] font-bold rounded border border-indigo-200 bg-white text-slate-800 outline-none focus:ring-1 focus:ring-indigo-400 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-200"
-                                          onSave={(next) => handleUpdateCorpPoolEmployee(emp.employee_id, "score", next)}
-                                          onCancel={() => setEditingEmployeeKey(null)}
-                                        />
-                                      ) : (
-                                        <div className="flex items-center gap-1 group">
-                                          <span
-                                            className={`font-black text-sm ${
-                                              Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
-                                            }`}
-                                            title={emp.matchRationale || (emp.requiredCount
-                                                ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
-                                                : undefined)}
-                                          >
-                                            {emp.score}%
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              setEditingEmployeeKey(`${emp.employee_id}:score`);
-                                              setEditingEmployeeValue(String(emp.score ?? ""));
-                                            }}
-                                            className="p-0.5 rounded text-slate-400 hover:text-indigo-650 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                                            title="Edit score"
-                                          >
-                                            <Edit2 className="w-3 h-3" />
-                                          </button>
-                                        </div>
-                                      )}
+                                      <span
+                                        className={`font-black text-sm ${
+                                          Number(emp.score) >= QUALIFIED_COVERAGE_PERCENT ? 'text-emerald-600 dark:text-emerald-400' : (Number(emp.score) >= 40 ? 'text-amber-500' : 'text-rose-500')
+                                        }`}
+                                        title={emp.matchRationale || (emp.requiredCount
+                                            ? `${emp.matchedCount}/${emp.requiredCount} required JD skills`
+                                            : undefined)}
+                                      >
+                                        {emp.score}%
+                                      </span>
                                       {emp.matchDecision && (
                                         <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
                                           {emp.matchDecision}
@@ -6514,7 +7024,7 @@ export default function AdminDashboard() {
                               ))}
                               {filteredEmployees.length === 0 && (
                                 <tr>
-                                  <td colSpan={8} className="text-center py-12 text-slate-400 italic">
+                                  <td colSpan={9} className="text-center py-12 text-slate-400 italic">
                                     {corpPoolListFilter === "shortlisted"
                                       ? "No shortlisted people yet. Click Shortlist on a row."
                                       : "No people in Corp Pool match this search."}
@@ -6563,28 +7073,80 @@ export default function AdminDashboard() {
                       </div>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row gap-3 justify-between items-center shrink-0">
-                      <div className="flex flex-col sm:flex-row gap-3 w-full sm:flex-1">
-                        <div className="w-full sm:flex-1 relative">
-                          <input
-                            type="text"
-                            placeholder="Search Employee Portal (name, ID, product, email)..."
-                            value={testResultsSearch}
-                            onChange={(e) => setTestResultsSearch(e.target.value)}
-                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                          />
-                          {testResultsSearch ? (
-                            <button
-                              type="button"
-                              onClick={() => setTestResultsSearch("")}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                              aria-label="Clear search"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          ) : null}
+                    <div className="grid min-w-0 grid-cols-1 items-end gap-3 shrink-0 2xl:grid-cols-[minmax(0,1fr)_auto]">
+                      <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(28rem,2fr)_repeat(4,minmax(9rem,1fr))]">
+                        <form
+                          className="min-w-0 flex gap-1.5 md:col-span-2 xl:col-span-1"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setTestResultsSearch(testResultsSearchDraft.trim());
+                            setPortalPage(1);
+                          }}
+                        >
+                          <div className="relative min-w-0 flex-1">
+                            <input
+                              type="text"
+                              placeholder="Search Employee Portal (name, ID, product, email)..."
+                              value={testResultsSearchDraft}
+                              onChange={(e) => setTestResultsSearchDraft(e.target.value)}
+                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pl-3 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            />
+                            {testResultsSearchDraft ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTestResultsSearch("");
+                                  setTestResultsSearchDraft("");
+                                  setPortalPage(1);
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                aria-label="Clear search"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            ) : null}
+                          </div>
+                          <Button type="submit" size="sm" className="h-auto rounded-xl px-3 text-xs">
+                            Search
+                          </Button>
+                        </form>
+                        <div className="min-w-0">
+                          <select
+                            value={portalProductFilter}
+                            onChange={(e) => setPortalProductFilter(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            aria-label="Product filter"
+                          >
+                            <option value="all">Product: All</option>
+                            {portalProductOptions.options.map((product) => (
+                              <option key={product.toLowerCase()} value={product.toLowerCase()}>
+                                {formatProductDisplayName(product)}
+                              </option>
+                            ))}
+                            {portalProductOptions.hasBlank ? (
+                              <option value="__none__">No product</option>
+                            ) : null}
+                          </select>
                         </div>
-                        <div className="w-full sm:w-56 shrink-0 relative" ref={portalCompletedDateRef}>
+                        <div className="min-w-0">
+                          <select
+                            value={portalDomainFilter}
+                            onChange={(e) => setPortalDomainFilter(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            aria-label="Domain filter"
+                          >
+                            <option value="all">Domain: All</option>
+                            {portalDomainOptions.options.map((domain) => (
+                              <option key={domain.toLowerCase()} value={domain.toLowerCase()}>
+                                {domain}
+                              </option>
+                            ))}
+                            {portalDomainOptions.hasBlank ? (
+                              <option value="__none__">No domain</option>
+                            ) : null}
+                          </select>
+                        </div>
+                        <div className="relative min-w-0" ref={portalCompletedDateRef}>
                           <button
                             type="button"
                             onClick={() => {
@@ -6777,7 +7339,7 @@ export default function AdminDashboard() {
                             </div>
                           ) : null}
                         </div>
-                        <div className="w-full sm:w-44 shrink-0">
+                        <div className="min-w-0">
                           <select
                             value={testStatusFilter}
                             onChange={(e) => setTestStatusFilter(e.target.value as PortalTestStatusFilter)}
@@ -6792,13 +7354,13 @@ export default function AdminDashboard() {
                           </select>
                         </div>
                       </div>
-                      <div className="flex gap-2 w-full sm:w-auto">
+                      <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto">
                         <Button
                           onClick={handleExportPortalData}
                           disabled={isExportingPortal}
                           variant="outline"
                           size="sm"
-                          className="flex-1 sm:flex-none rounded-xl border-border text-primary hover:bg-secondary gap-1.5 font-bold text-xs"
+                          className="w-full rounded-xl border-border text-primary hover:bg-secondary gap-1.5 font-bold text-xs xl:w-auto"
                         >
                           {isExportingPortal ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -6806,6 +7368,20 @@ export default function AdminDashboard() {
                             <Download className="w-3.5 h-3.5" />
                           )}
                           {isExportingPortal ? "Exporting..." : "Export to Excel"}
+                        </Button>
+                        <Button
+                          onClick={handleExportPortalSummary}
+                          disabled={isExportingPortalSummary}
+                          variant="outline"
+                          size="sm"
+                          className="w-full rounded-xl border-border text-primary hover:bg-secondary gap-1.5 font-bold text-xs xl:w-auto"
+                        >
+                          {isExportingPortalSummary ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5" />
+                          )}
+                          {isExportingPortalSummary ? "Exporting..." : "Export Summary"}
                         </Button>
                       </div>
                     </div>
@@ -6815,10 +7391,46 @@ export default function AdminDashboard() {
                         {testResultsSearch.trim() ? (
                           <button
                             type="button"
-                            onClick={() => setTestResultsSearch("")}
+                            onClick={() => {
+                              setTestResultsSearch("");
+                              setTestResultsSearchDraft("");
+                              setPortalPage(1);
+                            }}
                             className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
                           >
                             Search: {testResultsSearch.trim()}
+                            <X className="w-3 h-3" />
+                          </button>
+                        ) : null}
+                        {portalProductFilter !== "all" ? (
+                          <button
+                            type="button"
+                            onClick={() => setPortalProductFilter("all")}
+                            className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
+                          >
+                            Product:{" "}
+                            {portalProductFilter === "__none__"
+                              ? "No product"
+                              : formatProductDisplayName(
+                                  portalProductOptions.options.find(
+                                    (p) => p.toLowerCase() === portalProductFilter
+                                  ) || portalProductFilter
+                                )}
+                            <X className="w-3 h-3" />
+                          </button>
+                        ) : null}
+                        {portalDomainFilter !== "all" ? (
+                          <button
+                            type="button"
+                            onClick={() => setPortalDomainFilter("all")}
+                            className="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 px-2.5 py-1 text-[10px] font-bold"
+                          >
+                            Domain:{" "}
+                            {portalDomainFilter === "__none__"
+                              ? "No domain"
+                              : portalDomainOptions.options.find(
+                                  (d) => d.toLowerCase() === portalDomainFilter
+                                ) || portalDomainFilter}
                             <X className="w-3 h-3" />
                           </button>
                         ) : null}
@@ -6860,15 +7472,12 @@ export default function AdminDashboard() {
                         <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
                           {selectedPortalEmployeeIds.length} employee
                           {selectedPortalEmployeeIds.length > 1 ? "s" : ""} selected
-                          {selectedPortalVideoTargets.length > 0
-                            ? ` · ${selectedPortalVideoTargets.length} with recording`
-                            : " · none with a recording"}
                         </span>
                         <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={isBulkPortalMailing || isBulkPortalDownloading}
+                          disabled={isBulkPortalMailing}
                           onClick={handleBulkSendPortalEmployeeMails}
                           className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 border-border text-primary hover:bg-secondary"
                         >
@@ -6883,52 +7492,36 @@ export default function AdminDashboard() {
                           )}
                         </Button>
                         <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={
-                            isBulkPortalDownloading ||
-                            selectedPortalVideoTargets.length === 0
-                          }
-                          onClick={handleBulkDownloadPortalVideos}
-                          className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 border-border text-primary hover:bg-secondary"
-                        >
-                          {isBulkPortalDownloading ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              {bulkPortalDownloadProgress
-                                ? `Downloading ${bulkPortalDownloadProgress.current}/${bulkPortalDownloadProgress.total}...`
-                                : "Downloading..."}
-                            </>
-                          ) : (
-                            <>
-                              <Download className="w-3.5 h-3.5" /> Download Selected Videos
-                            </>
-                          )}
-                        </Button>
-                        <Button
                           variant="destructive"
                           size="sm"
                           disabled={
-                            actionLoading === "bulk-portal-videos" ||
-                            isBulkPortalDownloading ||
-                            selectedPortalVideoTargets.length === 0
+                            actionLoading === "bulk-portal-employees" ||
+                            selectedPortalEmployeeIds.length === 0
                           }
-                          onClick={handleBulkDeletePortalVideos}
+                          onClick={handleBulkDeletePortalEmployees}
                           className="h-8 text-xs font-bold rounded-xl flex items-center gap-1.5 px-3 bg-red-600 hover:bg-red-700 text-white shadow-sm shadow-red-500/25"
                         >
-                          {actionLoading === "bulk-portal-videos" ? (
+                          {actionLoading === "bulk-portal-employees" ? (
                             <>
                               <Loader2 className="w-3.5 h-3.5 animate-spin" /> Deleting...
                             </>
                           ) : (
                             <>
-                              <Trash2 className="w-3.5 h-3.5" /> Delete Selected Videos
+                              <Trash2 className="w-3.5 h-3.5" /> Delete Selected Employees
                             </>
                           )}
                         </Button>
                         </div>
                       </div>
                     )}
+
+                    <AdminListPagination
+                      page={portalPage}
+                      total={filteredPortalEmployees.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setPortalPage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
 
                     <div className="border border-border rounded-2xl overflow-hidden">
                       <div className="overflow-auto max-h-[600px]">
@@ -6966,11 +7559,19 @@ export default function AdminDashboard() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-800/50">
-                            {filteredPortalEmployees
+                            {portalPageRows
                               .map(account => {
                                 const isExpanded = !!expandedEmployees[account.employee_id];
                                 const statusLabel = getPortalTestStatusLabel(account.test_status);
                                 const videoTest = portalVideoTest(account);
+                                const resettableTests = (account.tests ?? []).filter((test: any) => !isArchivedPortalTest(test));
+                                const storedResetTestId = selectedResetTestByEmployee[account.employee_id] ?? "";
+                                const selectedResetTestId = resettableTests.some((test: any) => test.id === storedResetTestId)
+                                  ? storedResetTestId
+                                  : resettableTests.length === 1
+                                    ? resettableTests[0].id
+                                    : "";
+                                const selectedResetTest = resettableTests.find((test: any) => test.id === selectedResetTestId);
 
                                 return (
                                   <React.Fragment key={account.employee_id}>
@@ -7002,16 +7603,54 @@ export default function AdminDashboard() {
                                         </button>
                                       </td>
                                       <td className="p-3">
-                                        <div className="font-semibold text-slate-800 dark:text-slate-200">{portalEmployeeName(account)}</div>
+                                        {renderPortalEditableCell(
+                                          account,
+                                          "name",
+                                          String(account.full_name || account.name || ""),
+                                          portalEmployeeName(account),
+                                          "font-semibold text-slate-800 dark:text-slate-200"
+                                        )}
                                         {account.ddh ? (
                                           <div className="text-[10px] text-slate-400 font-medium">DDH: {account.ddh}</div>
                                         ) : null}
                                       </td>
                                       <td className="p-3 font-bold text-slate-700 dark:text-slate-300">{portalEmployeeId(account)}</td>
-                                      <td className="p-3 font-medium text-slate-600 dark:text-slate-400">{account.role || "—"}</td>
-                                      <td className="p-3 font-medium text-slate-500">{account.domain || "—"}</td>
-                                      <td className="p-3 font-semibold text-slate-700 dark:text-slate-300 max-w-[160px] truncate" title={formatProductDisplayName(account.product)}>{formatProductDisplayName(account.product) || "—"}</td>
-                                      <td className="p-3 text-slate-500 max-w-[180px] truncate" title={account.email}>{account.email || "—"}</td>
+                                      <td className="p-3">
+                                        {renderPortalEditableCell(
+                                          account,
+                                          "designation",
+                                          String(account.designation || ""),
+                                          account.designation || account.role || "—",
+                                          "font-medium text-slate-600 dark:text-slate-400"
+                                        )}
+                                      </td>
+                                      <td className="p-3">
+                                        {renderPortalEditableCell(
+                                          account,
+                                          "department",
+                                          String(account.department || account.domain || ""),
+                                          account.domain || account.department || "—",
+                                          "font-medium text-slate-500"
+                                        )}
+                                      </td>
+                                      <td className="p-3 max-w-[160px]">
+                                        {renderPortalEditableCell(
+                                          account,
+                                          "product",
+                                          String(account.account_product || account.product || ""),
+                                          formatProductDisplayName(account.product) || "—",
+                                          "font-semibold text-slate-700 dark:text-slate-300"
+                                        )}
+                                      </td>
+                                      <td className="p-3 max-w-[180px]">
+                                        {renderPortalEditableCell(
+                                          account,
+                                          "email",
+                                          String(account.email || ""),
+                                          account.email || "—",
+                                          "text-slate-500"
+                                        )}
+                                      </td>
                                       <td className="p-3">
                                         <Badge className="border-0 text-[10px] px-2 py-0.5 font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950/35 dark:text-indigo-300">
                                           {account.emp_status || "—"}
@@ -7079,7 +7718,7 @@ export default function AdminDashboard() {
                                         })()}
                                       </td>
                                       <td className="p-3">
-                                        <div className="flex flex-wrap items-center gap-1.5">
+                                        <div className="grid min-w-[24rem] grid-cols-3 grid-rows-2 gap-1.5">
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7099,7 +7738,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
                                           >
                                             <Play className="w-3.5 h-3.5 mr-1" />
                                             Play
@@ -7121,7 +7760,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
                                           >
                                             <Download className="w-3.5 h-3.5 mr-1" />
                                             Video
@@ -7129,17 +7768,25 @@ export default function AdminDashboard() {
                                           <Button
                                             size="sm"
                                             variant="outline"
-                                            disabled={!account.test_id || resettingTestId === account.test_id}
+                                            disabled={!selectedResetTestId || resettingTestId === selectedResetTestId}
+                                            title={
+                                              resettingTestId === selectedResetTestId
+                                                ? "Resetting the selected test..."
+                                                : !selectedResetTestId
+                                                  ? "Expand employee details and select one test to enable reset"
+                                                  : `Reset ${portalTestTitle(selectedResetTest?.topicTitle)}`
+                                            }
                                             onClick={() =>
                                               handleResetEmployeeTestClick(
-                                                account.test_id,
+                                                selectedResetTestId,
                                                 account.employee_id,
-                                                portalEmployeeName(account)
+                                                portalEmployeeName(account),
+                                                portalTestTitle(selectedResetTest?.topicTitle)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
                                           >
-                                            {resettingTestId === account.test_id ? (
+                                            {resettingTestId === selectedResetTestId ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                             ) : (
                                               <>
@@ -7162,7 +7809,7 @@ export default function AdminDashboard() {
                                                 : "No email address on file"
                                             }
                                             onClick={() => handleSendPortalEmployeeMail(account)}
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border"
+                                            className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
                                           >
                                             {portalMailSendingId === account.employee_id ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7173,6 +7820,32 @@ export default function AdminDashboard() {
                                               </>
                                             )}
                                           </Button>
+                                          {account.product_qb_eligible ? (
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={
+                                                !account.email ||
+                                                resettingPortalPasswordEmployeeId === account.employee_id
+                                              }
+                                              title={
+                                                account.email
+                                                  ? `Reset password and email a temporary password to ${account.email}`
+                                                  : "Cannot reset password: no email address on file"
+                                              }
+                                              onClick={() => handleResetPortalEmployeePassword(account)}
+                                              className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border"
+                                            >
+                                              {resettingPortalPasswordEmployeeId === account.employee_id ? (
+                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                              ) : (
+                                                <>
+                                                  <KeyRound className="w-3.5 h-3.5 mr-1" />
+                                                  Reset Password
+                                                </>
+                                              )}
+                                            </Button>
+                                          ) : null}
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -7193,7 +7866,7 @@ export default function AdminDashboard() {
                                                 portalEmployeeName(account)
                                               )
                                             }
-                                            className="rounded-lg h-8 px-3 text-[10px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                                            className="w-full justify-center rounded-lg h-8 px-2 text-[10px] font-bold border-border text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
                                           >
                                             {deletingVideoTestId === videoTest?.testId ? (
                                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -7216,115 +7889,12 @@ export default function AdminDashboard() {
                                                 Remarks: {account.remarks}
                                               </p>
                                             )}
-                                            <div>
-                                              <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-                                                Assigned Questions ({account.assigned_question_count})
-                                              </h4>
-                                              {(() => {
-                                                const lazyAssigned = assignedQuestionsByEmployee[account.employee_id];
-                                                const assignedQuestionsList =
-                                                  account.assigned_questions?.length
-                                                    ? account.assigned_questions
-                                                    : lazyAssigned?.questions ?? [];
-
-                                                if (
-                                                  !assignedQuestionsList.length &&
-                                                  lazyAssigned?.loading
-                                                ) {
-                                                  return (
-                                                    <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
-                                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                      Loading assigned questions...
-                                                    </div>
-                                                  );
-                                                }
-
-                                                if (account.test_status === "completed") {
-                                                  const completedTestId =
-                                                    account.tests?.find((test: any) => test.status === "completed")?.id ??
-                                                    account.test_id;
-                                                  const attemptData = completedTestId
-                                                    ? testAttemptDetails[completedTestId]
-                                                    : undefined;
-                                                  if (attemptData?.loading) {
-                                                    return (
-                                                      <div className="flex items-center gap-2 text-[11px] text-slate-500 py-2">
-                                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                        Loading submitted answers...
-                                                      </div>
-                                                    );
-                                                  }
-                                                  if (attemptData?.questions?.length) {
-                                                    return (
-                                                      <ol className="list-decimal pl-5 space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
-                                                        {attemptData.questions.map((q) => (
-                                                          <li key={q.question_index} className="space-y-1">
-                                                            <div>{q.question_text}</div>
-                                                            <div className="pl-1 space-y-0.5">
-                                                              {q.selected_option_text ? (
-                                                                <div
-                                                                  className={`font-semibold ${
-                                                                    q.is_correct
-                                                                      ? "text-emerald-600 dark:text-emerald-400"
-                                                                      : "text-rose-600 dark:text-rose-400"
-                                                                  }`}
-                                                                >
-                                                                  Selected: {q.selected_option_text}
-                                                                  {q.is_correct === false ? " (Incorrect)" : q.is_correct ? " (Correct)" : ""}
-                                                                </div>
-                                                              ) : (
-                                                                <div className="text-slate-400 font-medium italic">Not answered</div>
-                                                              )}
-                                                              {q.submitted_at && (
-                                                                <div className="text-[10px] text-slate-400 font-medium">
-                                                                  Submitted: {formatPortalTimestamp(q.submitted_at)}
-                                                                </div>
-                                                              )}
-                                                            </div>
-                                                          </li>
-                                                        ))}
-                                                      </ol>
-                                                    );
-                                                  }
-                                                  if (attemptData?.error) {
-                                                    return (
-                                                      <p className="text-[11px] text-rose-500 font-medium">
-                                                        Could not load answers: {attemptData.error}
-                                                      </p>
-                                                    );
-                                                  }
-                                                }
-
-                                                if (assignedQuestionsList.length > 0) {
-                                                  return (
-                                                    <ol className="list-decimal pl-5 space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
-                                                      {assignedQuestionsList.map((q: string, idx: number) => (
-                                                        <li key={idx}>{q}</li>
-                                                      ))}
-                                                    </ol>
-                                                  );
-                                                }
-
-                                                if (lazyAssigned?.error) {
-                                                  return (
-                                                    <p className="text-[11px] text-rose-500 font-medium">
-                                                      Could not load assigned questions: {lazyAssigned.error}
-                                                    </p>
-                                                  );
-                                                }
-
-                                                return (
-                                                  <p className="text-[11px] text-slate-400 font-medium italic">
-                                                    No assigned question text found in the portal mapping snapshot for this employee.
-                                                  </p>
-                                                );
-                                              })()}
-                                            </div>
                                             {account.tests?.length > 0 && (
                                               <div className="border border-indigo-50 dark:border-slate-850 rounded-xl overflow-hidden bg-white dark:bg-slate-950 shadow-inner">
                                                 <table className="w-full text-left border-collapse text-xs">
                                                   <thead>
                                                     <tr className="bg-slate-50 dark:bg-slate-900 border-b border-indigo-50 dark:border-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
+                                                      <th className="p-2.5">Reset</th>
                                                       <th className="p-2.5">Topic / Subject</th>
                                                       <th className="p-2.5">Difficulty</th>
                                                       <th className="p-2.5">Questions</th>
@@ -7336,10 +7906,41 @@ export default function AdminDashboard() {
                                                   </thead>
                                                   <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-850/50">
                                                     {account.tests.map((test: any) => (
-                                                      <tr key={test.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-900/20">
+                                                      <React.Fragment key={test.id}>
+                                                      <tr className="hover:bg-slate-50/30 dark:hover:bg-slate-900/20">
                                                         <td className="p-2.5">
-                                                          <div className="font-semibold text-slate-800 dark:text-slate-200">{test.topicTitle}</div>
+                                                          {isArchivedPortalTest(test) ? (
+                                                            <span className="text-[9px] text-slate-400" title="Archived previous attempt cannot be reset">—</span>
+                                                          ) : (
+                                                            <input
+                                                              type="radio"
+                                                              name={`reset-test-${account.employee_id}`}
+                                                              checked={selectedResetTestId === test.id}
+                                                              onChange={() =>
+                                                                setSelectedResetTestByEmployee((prev) => ({ ...prev, [account.employee_id]: test.id }))
+                                                              }
+                                                              aria-label={`Select ${portalTestTitle(test.topicTitle)} for reset`}
+                                                              className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"
+                                                            />
+                                                          )}
+                                                        </td>
+                                                        <td className="p-2.5">
+                                                          <div className="font-semibold text-slate-800 dark:text-slate-200">{portalTestTitle(test.topicTitle)}</div>
                                                           <div className="text-[9px] text-slate-400 font-medium">{test.subjectTitle}</div>
+                                                          <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="outline"
+                                                            className="mt-1 h-7 rounded-md px-2 text-[9px] font-bold"
+                                                            aria-expanded={Boolean(expandedTestDetails[test.id])}
+                                                            onClick={() => {
+                                                              const willExpand = !expandedTestDetails[test.id];
+                                                              setExpandedTestDetails((prev) => ({ ...prev, [test.id]: willExpand }));
+                                                              if (willExpand) void loadTestAttemptDetails(test.id);
+                                                            }}
+                                                          >
+                                                            {expandedTestDetails[test.id] ? "Hide Details" : "Show Details"}
+                                                          </Button>
                                                         </td>
                                                         <td className="p-2.5 capitalize text-slate-600 dark:text-slate-400 font-medium">{test.difficulty}</td>
                                                         <td className="p-2.5 text-slate-500 font-medium">{test.totalQuestions} Qs</td>
@@ -7400,70 +8001,118 @@ export default function AdminDashboard() {
                                                           </Badge>
                                                         </td>
                                                         <td className="p-2.5 text-slate-550 font-medium">
-                                                          {test.completedAt
-                                                            ? new Date(test.completedAt).toLocaleString()
-                                                            : (test.startedAt ? `Started ${new Date(test.startedAt).toLocaleString()}` : "—")}
+                                                          <div>
+                                                            Assigned: {test.createdAt ? new Date(test.createdAt).toLocaleString() : "—"}
+                                                          </div>
+                                                          {test.startedAt && (
+                                                            <div className="mt-0.5 text-[10px] text-slate-400">
+                                                              Started: {new Date(test.startedAt).toLocaleString()}
+                                                            </div>
+                                                          )}
+                                                          {test.completedAt && (
+                                                            <div className="mt-0.5 text-[10px] text-slate-400">
+                                                              Completed: {new Date(test.completedAt).toLocaleString()}
+                                                            </div>
+                                                          )}
                                                         </td>
                                                       </tr>
+                                                      {expandedTestDetails[test.id] && (
+                                                        <tr className="bg-white dark:bg-slate-950/60">
+                                                          <td colSpan={8} className="px-4 py-4 border-b border-indigo-50 dark:border-slate-850">
+                                                            {(() => {
+                                                              const attemptData = testAttemptDetails[test.id];
+                                                              if (attemptData?.loading) {
+                                                                return (
+                                                                  <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    Loading assigned questions and answers...
+                                                                  </div>
+                                                                );
+                                                              }
+                                                              if (attemptData?.error) {
+                                                                return (
+                                                                  <p className="text-[11px] text-rose-500 font-medium">
+                                                                    Could not load test details: {attemptData.error}
+                                                                  </p>
+                                                                );
+                                                              }
+                                                              if (!attemptData?.questions?.length) {
+                                                                return (
+                                                                  <p className="text-[11px] text-slate-400 italic">
+                                                                    No questions were found for this test.
+                                                                  </p>
+                                                                );
+                                                              }
+                                                              return (
+                                                                <div className="space-y-4">
+                                                                  <section>
+                                                                    <h4 className="mb-2 font-extrabold text-[11px] uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                                                                      Assigned Questions and Answers
+                                                                    </h4>
+                                                                    <ol className="list-decimal pl-5 space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
+                                                                      {attemptData.questions.map((q) => (
+                                                                        <li key={q.question_index} className="space-y-1">
+                                                                          <div>{q.question_text}</div>
+                                                                          <div className="pl-1">
+                                                                            {q.selected_option_text ? (
+                                                                              <span className={`font-semibold ${q.is_correct ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                                                                                Answer: {q.selected_option_text}
+                                                                                {q.is_correct === false ? " (Incorrect)" : q.is_correct ? " (Correct)" : ""}
+                                                                              </span>
+                                                                            ) : (
+                                                                              <span className="text-slate-400 font-medium italic">No answer submitted</span>
+                                                                            )}
+                                                                            {q.submitted_at && (
+                                                                              <div className="mt-0.5 text-[10px] text-slate-400">
+                                                                                Submitted: {formatPortalTimestamp(q.submitted_at)}
+                                                                              </div>
+                                                                            )}
+                                                                          </div>
+                                                                        </li>
+                                                                      ))}
+                                                                    </ol>
+                                                                  </section>
+                                                                  <section className="border-t border-border pt-3">
+                                                                    <h4 className="mb-2 font-extrabold text-[11px] uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                                                                      Proctoring Anomalies
+                                                                    </h4>
+                                                                    {test.proctoring?.violations?.length ? (
+                                                                      <div className="overflow-x-auto rounded-lg border border-amber-100 dark:border-amber-950/40">
+                                                                        <table className="w-full text-left border-collapse text-xs">
+                                                                          <thead>
+                                                                            <tr className="bg-amber-50/70 dark:bg-amber-950/20 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
+                                                                              <th className="p-2">Timestamp</th>
+                                                                              <th className="p-2">Anomaly</th>
+                                                                              <th className="p-2">Category</th>
+                                                                              <th className="p-2">Severity</th>
+                                                                              <th className="p-2">Detail</th>
+                                                                            </tr>
+                                                                          </thead>
+                                                                          <tbody className="divide-y divide-border">
+                                                                            {test.proctoring.violations.map((v: any, idx: number) => (
+                                                                              <tr key={`${test.id}-${idx}-${v.timestamp || idx}`}>
+                                                                                <td className="p-2 whitespace-nowrap">{formatPortalTimestamp(v.timestamp) || "—"}</td>
+                                                                                <td className="p-2 font-semibold">{v.type}</td>
+                                                                                <td className="p-2 capitalize">{v.category || "—"}</td>
+                                                                                <td className="p-2 capitalize">{v.severity || "low"}</td>
+                                                                                <td className="p-2">{v.detail || "—"}</td>
+                                                                              </tr>
+                                                                            ))}
+                                                                          </tbody>
+                                                                        </table>
+                                                                      </div>
+                                                                    ) : (
+                                                                      <p className="text-[11px] text-slate-400 italic">No anomalies recorded for this test.</p>
+                                                                    )}
+                                                                  </section>
+                                                                </div>
+                                                              );
+                                                            })()}
+                                                          </td>
+                                                        </tr>
+                                                      )}
+                                                      </React.Fragment>
                                                     ))}
-                                                  </tbody>
-                                                </table>
-                                              </div>
-                                            )}
-                                            {account.tests?.some((t: any) => (t.proctoring?.violations || []).length > 0) && (
-                                              <div className="border border-amber-100 dark:border-amber-950/40 rounded-xl overflow-hidden bg-white dark:bg-slate-950 shadow-inner">
-                                                <div className="px-3 py-2 bg-amber-50/80 dark:bg-amber-950/20 border-b border-amber-100 dark:border-amber-950/40">
-                                                  <h4 className="font-extrabold text-[11px] uppercase tracking-wider text-amber-800 dark:text-amber-300">
-                                                    Proctoring Anomalies (with timestamps)
-                                                  </h4>
-                                                  <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 mt-0.5">
-                                                    Face / attention / browser events recorded during the assessment (IST).
-                                                  </p>
-                                                </div>
-                                                <table className="w-full text-left border-collapse text-xs">
-                                                  <thead>
-                                                    <tr className="bg-slate-50 dark:bg-slate-900 border-b border-indigo-50 dark:border-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
-                                                      <th className="p-2.5">Timestamp</th>
-                                                      <th className="p-2.5">Anomaly</th>
-                                                      <th className="p-2.5">Category</th>
-                                                      <th className="p-2.5">Severity</th>
-                                                      <th className="p-2.5">Detail</th>
-                                                    </tr>
-                                                  </thead>
-                                                  <tbody className="divide-y divide-indigo-50/50 dark:divide-slate-850/50">
-                                                    {account.tests.flatMap((test: any) =>
-                                                      (test.proctoring?.violations || []).map(
-                                                        (v: any, idx: number) => (
-                                                          <tr key={`${test.id}-${idx}-${v.timestamp || idx}`}>
-                                                            <td className="p-2.5 whitespace-nowrap font-medium text-slate-700 dark:text-slate-300">
-                                                              {formatPortalTimestamp(v.timestamp) || "—"}
-                                                            </td>
-                                                            <td className="p-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                                                              {v.type}
-                                                            </td>
-                                                            <td className="p-2.5 capitalize text-slate-500">
-                                                              {v.category || "—"}
-                                                            </td>
-                                                            <td className="p-2.5">
-                                                              <span
-                                                                className={`inline-flex rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
-                                                                  v.severity === "high"
-                                                                    ? "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300"
-                                                                    : v.severity === "medium"
-                                                                      ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                                                                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                                                                }`}
-                                                              >
-                                                                {v.severity || "low"}
-                                                              </span>
-                                                            </td>
-                                                            <td className="p-2.5 text-slate-500">
-                                                              {v.detail || "—"}
-                                                            </td>
-                                                          </tr>
-                                                        )
-                                                      )
-                                                    )}
                                                   </tbody>
                                                 </table>
                                               </div>
@@ -7493,7 +8142,15 @@ export default function AdminDashboard() {
                                               ? `No employees completed on ${formatPortalCompletedFilterButtonLabel(portalCompletedDateFilter).replace(/^Completed On: /, "")}.`
                                               : testStatusFilter !== "all"
                                                 ? `No employees match test status “${getPortalTestStatusLabel(testStatusFilter)}”.`
-                                                : "No employees match the current filters."}
+                                                : portalDomainFilter !== "all"
+                                                  ? `No employees match domain “${
+                                                      portalDomainFilter === "__none__"
+                                                        ? "No domain"
+                                                        : portalDomainOptions.options.find(
+                                                            (d) => d.toLowerCase() === portalDomainFilter
+                                                          ) || portalDomainFilter
+                                                    }”.`
+                                                  : "No employees match the current filters."}
                                       </p>
                                       {testResultsSearch.trim() && portalDateOnlyMatchCount > 0 ? (
                                         <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
@@ -7532,21 +8189,48 @@ export default function AdminDashboard() {
                       </div>
                       <h3 className="font-bold text-slate-800 text-sm">No Emails Sent</h3>
                       <p className="text-xs text-slate-500 max-w-sm leading-relaxed">
-                        No invitation emails have been simulated or dispatched to candidates yet. Mark a candidate suitable and click "Send Invite Mail" to simulate an invitation.
+                        No invitation emails have been dispatched yet. Mark a candidate suitable and click "Send Invite Mail" to send an invitation.
                       </p>
                     </div>
                   ) : (
                     <div className="space-y-4">
                       {/* Search Bar for Outbox */}
-                      <div className="relative shrink-0">
-                        <input
-                          type="text"
-                          placeholder="Search Email Outbox..."
-                          value={outboxSearch}
-                          onChange={(e) => setOutboxSearch(e.target.value)}
-                          className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                        />
-                      </div>
+                      <form
+                        className="flex shrink-0 gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          setOutboxSearch(outboxSearchDraft.trim());
+                          setOutboxPage(1);
+                        }}
+                      >
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            type="text"
+                            placeholder="Search Email Outbox..."
+                            value={outboxSearchDraft}
+                            onChange={(e) => setOutboxSearchDraft(e.target.value)}
+                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                          />
+                          {(outboxSearchDraft || outboxSearch) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOutboxSearch("");
+                                setOutboxSearchDraft("");
+                                setOutboxPage(1);
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                              aria-label="Clear email outbox search"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
+                          Search
+                        </Button>
+                      </form>
 
                       <div className="flex items-center justify-between pb-2 border-b border-border shrink-0">
                         <div className="flex items-center gap-2">
@@ -7567,7 +8251,7 @@ export default function AdminDashboard() {
                           <span className="text-xs font-bold text-muted-foreground">
                             {selectedEmailIds.length > 0
                               ? `${selectedEmailIds.length} selected`
-                              : `Showing ${emailsToRender.length} Simulated Invitation Email${emailsToRender.length !== 1 ? "s" : ""}`
+                              : `Showing ${emailsToRender.length} invitation email${emailsToRender.length !== 1 ? "s" : ""}`
                             }
                           </span>
                         </div>
@@ -7594,6 +8278,14 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
+                      <AdminListPagination
+                        page={outboxPage}
+                        total={emailsToRender.length}
+                        pageSize={adminListPageSize}
+                        onPageChange={setOutboxPage}
+                        onPageSizeChange={handleAdminListPageSizeChange}
+                      />
+
                       <div className="space-y-3 max-h-[550px] overflow-y-auto pr-1">
                         {emailsToRender.length === 0 ? (
                           <div className="flex flex-col items-center justify-center py-12 text-center space-y-2">
@@ -7601,11 +8293,11 @@ export default function AdminDashboard() {
                             <h4 className="font-bold text-slate-700 text-xs">No matching outbox emails found</h4>
                           </div>
                         ) : (
-                          emailsToRender.map((email) => {
+                          outboxPageRows.map((email) => {
                             return (
                             <Card
                               key={email.id}
-                              className={`p-4 border-border bg-card/60 hover:border-indigo-300 dark:hover:border-slate-700 hover:shadow-soft transition-all duration-300 flex items-start gap-3 ${
+                              className={`p-2.5 border-border bg-card/60 hover:border-indigo-300 dark:hover:border-slate-700 hover:shadow-soft transition-all duration-200 flex items-start gap-2 ${
                                 selectedEmailIds.includes(email.id) ? "border-indigo-400 dark:border-indigo-800 bg-indigo-50/10 dark:bg-indigo-950/10" : ""
                               }`}
                             >
@@ -7615,33 +8307,41 @@ export default function AdminDashboard() {
                               onChange={() => handleToggleEmailSelect(email.id)}
                               className="mt-1 w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 cursor-pointer"
                             />
-                            <div className="flex-1 flex flex-col gap-3">
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="space-y-1">
-                                  <h4 className="font-black text-foreground text-sm flex items-center gap-1.5">
+                            <div className="flex-1 flex flex-col gap-2">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-0.5">
+                                  <h4 className="font-black text-foreground text-xs flex items-center gap-1.5">
                                     {email.fullName}
-                                    <Badge className="bg-secondary text-primary border-0 font-bold text-[9px] px-2 py-0.5">
-                                      Simulated Dispatch
-                                    </Badge>
+                                    {(() => {
+                                      const badge = outboxStatusBadge(email.status);
+                                      return (
+                                        <Badge className={`${badge.className} font-bold text-[8px] px-1.5 py-0`}>
+                                          {badge.label}
+                                        </Badge>
+                                      );
+                                    })()}
                                   </h4>
-                                  <div className="text-xs text-muted-foreground font-semibold">
+                                  <div className="text-[10px] text-muted-foreground font-semibold">
                                     To: <span className="text-primary font-bold">{email.to}</span>
                                   </div>
-                                  <div className="text-[11px] text-muted-foreground font-medium italic">
+                                  <div className="truncate text-[10px] text-muted-foreground font-medium">
                                     Subject: {email.subject}
                                   </div>
+                                  <div className="text-[10px] text-muted-foreground font-medium">
+                                    Sent via login: <span className="font-semibold text-foreground">{email.rmEmail || "Unknown"}</span>
+                                  </div>
                                 </div>
-                                <div className="text-right flex flex-col items-end gap-1.5">
-                                  <span className="text-[10px] text-muted-foreground font-semibold">
+                                <div className="shrink-0 text-right flex flex-col items-end gap-0.5">
+                                  <span className="text-[9px] text-muted-foreground font-semibold">
                                     {new Date(email.dispatchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                   </span>
-                                  <span className="text-[9px] text-muted-foreground font-medium">
+                                  <span className="text-[8px] text-muted-foreground font-medium">
                                     {new Date(email.dispatchedAt).toLocaleDateString()}
                                   </span>
                                 </div>
                               </div>
 
-                              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              <div className="flex items-center justify-end gap-1.5 border-t border-slate-100 pt-1.5 dark:border-slate-800">
                                 <Button
                                   size="sm"
                                   variant="outline"
@@ -7649,7 +8349,7 @@ export default function AdminDashboard() {
                                     setSelectedEmail(email);
                                     setShowEmailModal(true);
                                   }}
-                                  className="h-8 text-[11px] font-bold border-border text-primary hover:bg-secondary rounded-xl flex items-center gap-1"
+                                  className="h-7 text-[10px] font-bold border-border text-primary hover:bg-secondary rounded-lg flex items-center gap-1 px-2"
                                 >
                                   <Eye className="w-3.5 h-3.5" /> View HTML Invite
                                 </Button>
@@ -7662,7 +8362,7 @@ export default function AdminDashboard() {
                                     setDeletePasswordInput("");
                                     setDeleteModalError(null);
                                   }}
-                                  className="h-8 text-[11px] font-bold bg-red-600 hover:bg-red-700 text-white rounded-xl flex items-center gap-1 px-3"
+                                  className="h-7 text-[10px] font-bold bg-red-600 hover:bg-red-700 text-white rounded-lg flex items-center gap-1 px-2"
                                   title="Delete Email Log"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" /> Delete Log
@@ -7691,15 +8391,42 @@ export default function AdminDashboard() {
                       )}
                       {/* Candidate Search Bar */}
                       {(suitableCandidates.length > 0 || unsuitableCandidates.length > 0 || candidateSearch) && (
-                        <div className="relative shrink-0">
-                          <input
-                            type="text"
-                            placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
-                            value={candidateSearch}
-                            onChange={(e) => setCandidateSearch(e.target.value)}
-                            className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
-                          />
-                        </div>
+                        <form
+                          className="flex shrink-0 gap-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            setCandidateSearch(candidateSearchDraft.trim());
+                            setCandidatePage(1);
+                          }}
+                        >
+                          <div className="relative min-w-0 flex-1">
+                            <input
+                              type="text"
+                              placeholder={`Search ${activeTab === 'suitable' ? 'Suitable' : 'Non-Suitable'} Candidates...`}
+                              value={candidateSearchDraft}
+                              onChange={(e) => setCandidateSearchDraft(e.target.value)}
+                              className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                            />
+                            {(candidateSearchDraft || candidateSearch) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCandidateSearch("");
+                                  setCandidateSearchDraft("");
+                                  setCandidatePage(1);
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                aria-label="Clear candidate search"
+                                title="Clear search"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                          <Button type="submit" size="sm" className="shrink-0 rounded-xl px-3 text-xs">
+                            Search
+                          </Button>
+                        </form>
                       )}
 
                       {candidatesToRender.length === 0 ? (
@@ -7754,10 +8481,22 @@ export default function AdminDashboard() {
                         </Button>
                       )}
                     </div>
+                    <AdminListPagination
+                      page={candidatePage}
+                      total={candidatesToRender.length}
+                      pageSize={adminListPageSize}
+                      onPageChange={setCandidatePage}
+                      onPageSizeChange={handleAdminListPageSizeChange}
+                    />
                     <div className="space-y-4 max-h-[550px] overflow-y-auto pr-1">
-                      {candidatesToRender.map((row) => {
+                      {candidatePageRows.map((row) => {
                       const isInterviewComplete = row.isConcluded || (row.interview_attempts && row.interview_attempts.length > 0);
                       const hasVideoRecording = !!row.report?.videoUrl;
+                      const candidateEmail = String(row.parsed?.personal?.email || "").trim().toLowerCase();
+                      const hasSentInvite = row.report?.inviteEmailStatus === "sent" || emails.some(e =>
+                        String(e.to || "").trim().toLowerCase() === candidateEmail &&
+                        String(e.status || "").toLowerCase() === "sent"
+                      );
 
                       return (
                         <Card 
@@ -7789,8 +8528,11 @@ export default function AdminDashboard() {
                                      </Badge>
                                    )}
                                    {hasVideoRecording && (
-                                     <Badge className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 font-black text-[9px] px-2 py-0 flex items-center gap-1 hover:bg-rose-100/50">
-                                       <Video className="w-3 h-3 text-rose-500" /> RECORDING
+                                     <Badge
+                                       title="Interview recording saved and available."
+                                       className="bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 font-black text-[9px] px-2 py-0 flex items-center gap-1 hover:bg-rose-100/50"
+                                     >
+                                       <Video className="w-3 h-3 text-rose-500" /> RECORDING SAVED
                                      </Badge>
                                    )}
                                    {row.reset && (
@@ -7798,7 +8540,7 @@ export default function AdminDashboard() {
                                        Test Reset
                                      </Badge>
                                    )}
-                                   {emails.some(e => e.to === (row.parsed?.personal?.email || "")) && (
+                                   {hasSentInvite && (
                                      <Badge className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300 border-0 font-bold text-[9px] px-2 py-0.5 ml-2">
                                        Mail Sent
                                      </Badge>
@@ -7917,7 +8659,7 @@ export default function AdminDashboard() {
                               <div className="flex flex-wrap gap-2 items-center">
                                 {isInterviewComplete ? (
                                   <Badge className="bg-emerald-500 text-white font-bold shadow-sm shadow-emerald-500/25">
-                                    Interview Completed ({row.interview_attempts.length})
+                                    Interview Completed
                                   </Badge>
                                 ) : (
                                   <Badge className="bg-red-500 text-white border-0 font-bold shadow-sm shadow-red-500/25">
@@ -7961,6 +8703,26 @@ export default function AdminDashboard() {
                                     ) : (
                                       <>
                                         <Mail className="w-3.5 h-3.5" /> Send Invite Mail
+                                      </>
+                                    )}
+                                  </Button>
+                                )}
+
+                                {getSuitability(row) === "suitable" && !isInterviewComplete && hasSentInvite && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={actionLoading === `reset-password-${row.id}`}
+                                    onClick={() => handleResetCandidatePassword(row)}
+                                    className="h-8 text-[11px] font-bold border-indigo-100 text-indigo-600 hover:bg-indigo-50 rounded-xl flex items-center gap-1"
+                                  >
+                                    {actionLoading === `reset-password-${row.id}` ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Resetting...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <KeyRound className="w-3.5 h-3.5" /> Reset Password
                                       </>
                                     )}
                                   </Button>
@@ -8334,6 +9096,16 @@ export default function AdminDashboard() {
             </div>
 
             <div className="flex gap-2">
+              <select
+                aria-label="Log export format"
+                value={logsExportFormat}
+                onChange={(e) => setLogsExportFormat(e.target.value)}
+                className="h-8 rounded-xl border border-border bg-background px-2 text-[10px] font-bold"
+              >
+                <option value="csv">CSV</option>
+                <option value="xlsx">Excel</option>
+                <option value="json">JSON</option>
+              </select>
               <Button
                 onClick={() => matchScoreInputRef.current?.click()}
                 disabled={isImportingMatchScores}
@@ -8455,6 +9227,19 @@ export default function AdminDashboard() {
                   MANAGE
                 </Button>
               </div>
+              <div className="flex items-center justify-between gap-3 p-3 border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/30 rounded-xl">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="text-xs font-bold text-foreground">Employee Accounts & Questions</div>
+                  <div className="text-[9px] text-slate-400 font-medium leading-snug">Configure question banks, add employees, or bulk upload a roster</div>
+                </div>
+                <Button
+                  onClick={() => setShowEmployeePortalManager(true)}
+                  size="sm"
+                  className="h-7 px-3 text-[10px] font-black rounded-lg border shrink-0 bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
+                >
+                  MANAGE
+                </Button>
+              </div>
             </div>
           </Card>
           )}
@@ -8502,19 +9287,47 @@ export default function AdminDashboard() {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                ["Requests", logMetrics.totalRequests],
+                ["Successful", logMetrics.successfulRequests],
+                ["Failed", logMetrics.failedRequests],
+                ["Slow APIs", logMetrics.slowApis],
+                ["DB errors", logMetrics.databaseErrors],
+                ["AI errors", logMetrics.aiServiceErrors],
+                ["Security events", logMetrics.securityEvents],
+                ["Active users", logMetrics.activeUsers],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl border border-border bg-muted/30 px-3 py-2">
+                  <p className="text-[9px] font-bold uppercase text-muted-foreground">{label}</p>
+                  <p className="text-sm font-black text-foreground">{Number(value || 0).toLocaleString()}</p>
+                </div>
+              ))}
+            </div>
+
             {/* Filters Row */}
-            <div className="flex flex-col sm:flex-row gap-3 items-center shrink-0">
+            <div className="flex flex-col gap-3 shrink-0">
               <div className="w-full sm:flex-1 relative">
                 <input
                   type="text"
                   placeholder="Search log activity & details..."
                   value={logsSearch}
                   onChange={(e) => setLogsSearch(e.target.value)}
-                  className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
+                  className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 p-2 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-200"
                 />
+                {logsSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setLogsSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                    aria-label="Clear log search"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              
-              <div className="flex gap-3 w-full sm:w-auto">
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
                 <select
                   value={logsModuleFilter}
                   onChange={(e) => setLogsModuleFilter(e.target.value)}
@@ -8530,6 +9343,10 @@ export default function AdminDashboard() {
                   <option value="auth">🔐 Sign-in</option>
                   <option value="audit">🛡️ Admin actions</option>
                   <option value="error">⚠️ System Errors</option>
+                  <option value="http">🌐 API Requests</option>
+                  <option value="database">🗄️ Database</option>
+                  <option value="ai">✨ AI Service</option>
+                  <option value="security">🔒 Security</option>
                 </select>
 
                 <select
@@ -8542,6 +9359,56 @@ export default function AdminDashboard() {
                   <option value="failed">❌ Failed</option>
                   <option value="warning">⚠️ Warning</option>
                 </select>
+                <select
+                  value={logsLevelFilter}
+                  onChange={(e) => setLogsLevelFilter(e.target.value)}
+                  aria-label="Filter logs by level"
+                  className="rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200"
+                >
+                  <option value="all">All levels</option>
+                  <option value="DEBUG">Debug</option>
+                  <option value="INFO">Info</option>
+                  <option value="WARNING">Warning</option>
+                  <option value="ERROR">Error</option>
+                  <option value="CRITICAL">Critical</option>
+                </select>
+                <div className="relative min-w-0">
+                  <input
+                    type="search"
+                    placeholder="Filter user"
+                    aria-label="Filter logs by user"
+                    value={logsUserFilter}
+                    onChange={(e) => setLogsUserFilter(e.target.value)}
+                    className="w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-3 py-2 pr-8 text-xs"
+                  />
+                  {logsUserFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setLogsUserFilter("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                      aria-label="Clear user filter"
+                      title="Clear filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    aria-label="Logs from date"
+                    value={logsFromFilter}
+                    onChange={(e) => setLogsFromFilter(e.target.value)}
+                    className="min-w-0 w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-2 py-2 text-xs"
+                  />
+                  <input
+                    type="date"
+                    aria-label="Logs to date"
+                    value={logsToFilter}
+                    onChange={(e) => setLogsToFilter(e.target.value)}
+                    className="min-w-0 w-full rounded-xl border border-border bg-slate-50/50 dark:bg-slate-950 px-2 py-2 text-xs"
+                  />
+                </div>
               </div>
             </div>
 
@@ -8585,6 +9452,24 @@ export default function AdminDashboard() {
                           <span className="text-slate-200 font-black shrink-0">
                             {log.action}
                           </span>
+                          {log.status_code != null && (
+                            <span className="text-slate-400 shrink-0">HTTP {log.status_code}</span>
+                          )}
+                          {log.execution_time != null && (
+                            <span className="text-slate-400 shrink-0">{log.execution_time} ms</span>
+                          )}
+                          {log.table_name && (
+                            <span className="text-indigo-300 shrink-0">
+                              {log.db_operation} {log.table_name}
+                            </span>
+                          )}
+                          {log.model && (
+                            <span className="text-violet-300 shrink-0">
+                              {log.model}
+                              {log.input_tokens != null ? ` · ${log.input_tokens} in` : ""}
+                              {log.output_tokens != null ? ` / ${log.output_tokens} out` : ""}
+                            </span>
+                          )}
                           <span className={`shrink-0 ${
                             isError ? "text-rose-500 font-extrabold" :
                             isWarning ? "text-amber-500 font-extrabold" :
@@ -8595,6 +9480,26 @@ export default function AdminDashboard() {
                           <span className="text-slate-450 whitespace-pre-wrap break-all">
                             {log.details}
                           </span>
+                          {log.request_id && (
+                            <span className="text-slate-500 shrink-0">request {log.request_id}</span>
+                          )}
+                          {log.endpoint && (
+                            <span className="basis-full text-slate-400 break-all">{log.endpoint}</span>
+                          )}
+                          {(log.error_message || log.stack_trace || log.request_payload || log.response_payload) && (
+                            <details className="basis-full text-slate-400">
+                              <summary className="cursor-pointer">Safe payload / error details</summary>
+                              <pre className="mt-1 whitespace-pre-wrap break-all text-[9px] text-slate-400">
+                                {JSON.stringify({
+                                  requestPayload: log.request_payload,
+                                  responsePayload: log.response_payload,
+                                  error: log.error_message,
+                                  stackTrace: log.stack_trace,
+                                  userAgent: log.user_agent,
+                                }, null, 2)}
+                              </pre>
+                            </details>
+                          )}
                         </div>
                       </div>
                     );
@@ -8731,6 +9636,10 @@ export default function AdminDashboard() {
                 <span className="text-primary font-semibold ml-1.5">&lt;{selectedEmail.to}&gt;</span>
               </div>
               <div>
+                <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Sent via login:</span>
+                <span className="text-slate-800 dark:text-slate-200 font-semibold ml-2">{selectedEmail.rmEmail || "Unknown"}</span>
+              </div>
+              <div>
                 <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] w-12 inline-block">Subject:</span>
                 <span className="text-slate-800 dark:text-slate-200 font-semibold">{selectedEmail.subject}</span>
               </div>
@@ -8826,7 +9735,7 @@ export default function AdminDashboard() {
                    deleteTargetId === "bulk-emails" ? "Delete Selected Email Logs" :
                    deleteTargetId === "bulk-employees-pool" ? "Delete Selected Employees" :
                    deleteTargetId === "bulk-jds" ? "Delete Selected Requirements" :
-                   deleteTargetId === "bulk-portal-videos" ? "Delete Selected Proctoring Videos" :
+                   deleteTargetId === "bulk-portal-employees" ? "Delete Selected Employee Portal Accounts" :
                    deleteTargetId === "clear-outbox" ? "Clear Email Outbox" :
                    deleteTargetId.startsWith("outbox-log:") ? "Delete Email Log" : 
                    deleteTargetId.startsWith("emp-") ? "Delete Employee Record" : "Delete Candidate Record"}
@@ -8846,17 +9755,17 @@ export default function AdminDashboard() {
                 {deleteTargetId === "bulk"
                   ? `This action is permanent and will delete the ${selectedResumeIds.length} selected candidate resume analyses, test answers, and active sessions.`
                   : deleteTargetId === "bulk-emails"
-                  ? `This action is permanent and will delete the ${selectedEmailIds.length} selected simulated invitation email outbox logs.`
+                  ? `This action is permanent and will delete the ${selectedEmailIds.length} selected invitation email outbox logs.`
                   : deleteTargetId === "bulk-employees-pool"
                   ? `This action is permanent and will delete the ${selectedEmployeeIds.length} selected corporate pool employee records and their stored resumes.`
                   : deleteTargetId === "bulk-jds"
                   ? `This action is permanent and will delete the ${selectedJdIds.length} selected job requirements (BR / JD).`
-                  : deleteTargetId === "bulk-portal-videos"
-                  ? `This will permanently delete proctoring videos for ${selectedPortalVideoTargets.length} selected employee(s). Test scores, answers, and status will NOT be changed.`
+                  : deleteTargetId === "bulk-portal-employees"
+                  ? `This action is permanent and will delete ${selectedPortalEmployeeIds.length} selected employee portal account(s), including their assessments, answers, and stored videos.`
                   : deleteTargetId === "clear-outbox"
-                  ? "This action is permanent and will clear all simulated invitation email logs from the outbox."
+                  ? "This action is permanent and will clear all invitation email logs from the outbox."
                   : deleteTargetId.startsWith("outbox-log:")
-                  ? "This action is permanent and will delete this simulated invitation email log."
+                  ? "This action is permanent and will delete this invitation email log."
                   : deleteTargetId.startsWith("emp-")
                   ? "This action is permanent and will delete the employee record and stored resume from Corp Pool."
                   : "This action is permanent and will delete the candidate's resume analysis, test answers, and active session."}
@@ -9004,7 +9913,7 @@ export default function AdminDashboard() {
 
             <div className="p-6 space-y-4">
               <p className="text-xs text-slate-605 dark:text-slate-300 leading-relaxed font-semibold">
-                Reset the assigned test for{" "}
+                Reset <span className="text-primary font-bold">{resetTargetEmployee.testTitle}</span> for{" "}
                 <span className="text-primary font-bold">{resetTargetEmployee.employeeName}</span>{" "}
                 (Emp ID: <span className="text-primary font-bold">{resetTargetEmployee.employeeId}</span>)?
                 The current attempt is saved in full so they can still review it. They can then retake the live test.
@@ -9024,6 +9933,52 @@ export default function AdminDashboard() {
                 className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-md shadow-amber-500/20 text-xs"
               >
                 Confirm Reset
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {resetPortalPasswordTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in text-foreground">
+          <Card className="w-full max-w-md bg-card border border-indigo-150 dark:border-slate-800 shadow-2xl rounded-3xl overflow-hidden animate-scale-up">
+            <div className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-white" />
+                <span className="font-bold text-sm tracking-wide">Reset Employee Password</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetPortalPasswordTarget(null)}
+                className="text-white/80 hover:text-white font-bold"
+                aria-label="Close password reset confirmation"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6">
+              <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
+                Reset the Employee Portal password for{" "}
+                <span className="text-primary font-bold">{resetPortalPasswordTarget.employeeName}</span>{" "}
+                ({resetPortalPasswordTarget.employeeId})? Their temporary password will be set to their Employee ID and emailed to{" "}
+                <span className="text-primary font-bold">{resetPortalPasswordTarget.email}</span>.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-950/20 border-t border-slate-100 dark:border-slate-800 px-6 py-4 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setResetPortalPasswordTarget(null)}
+                className="rounded-xl font-bold text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmResetPortalEmployeePassword}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-500/20 text-xs"
+              >
+                Reset Password
               </Button>
             </div>
           </Card>
@@ -10168,6 +11123,20 @@ export default function AdminDashboard() {
             </div>
           </Card>
         </div>
+      )}
+
+      {showQuickSearch && (
+        <QuickSearchModal
+          employees={employees}
+          candidates={resumes}
+          jds={jds}
+          initialJdId={
+            selectedJdId && selectedJdId !== "all" && !selectedJdId.includes("@")
+              ? selectedJdId
+              : ""
+          }
+          onClose={() => setShowQuickSearch(false)}
+        />
       )}
     </div>
   );

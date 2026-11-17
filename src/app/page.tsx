@@ -24,6 +24,7 @@ import { APP_NAME, APP_TAGLINE } from "@/lib/brand";
 export default function HomePage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -42,22 +43,25 @@ export default function HomePage() {
       const response = await fetch("/api/interview/access", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim() }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
-      const body = await response.json();
+      const body = await response.json().catch(() => null);
 
-      if (!response.ok || !body.success) {
-        throw new Error(body?.message || "Verification failed");
+      if (!response.ok) {
+        throw new Error(body?.message || `Sign-in failed (HTTP ${response.status}). Please try again or contact HR.`);
+      }
+      if (!body?.success) {
+        throw new Error(body?.message || "The assessment service could not verify your credentials. Contact HR if the problem continues.");
       }
       if (!body.interviewToken || !body.resumeId) {
-        throw new Error("Interview session could not be started. Please try again.");
+        throw new Error("Your sign-in was accepted, but the assessment session could not be started. Contact HR.");
       }
       window.sessionStorage.setItem(`interview_token_${body.resumeId}`, body.interviewToken);
 
       router.push(`/interview/${body.resumeId}`);
-    } catch (err: any) {
-      setError(err.message || "An unexpected error occurred. Please try again.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The assessment service could not complete sign-in. Please try again or contact HR.");
     } finally {
       setIsSubmitting(false);
     }
@@ -204,7 +208,7 @@ export default function HomePage() {
               <div className="mb-5">
                 <h2 className="text-lg font-bold text-foreground">Enter interview</h2>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Use the email from your invitation.
+                    Use the email address and temporary password from your invitation email.
                 </p>
               </div>
 
@@ -223,11 +227,30 @@ export default function HomePage() {
                       type="email"
                       placeholder="candidate@company.com"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        setPassword("");
+                      }}
                       className="app-input pl-10 rounded-xl"
                       required
                     />
                   </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor="candidatePassword" className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    Temporary password
+                  </label>
+                  <input
+                    id="candidatePassword"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="Password from your invitation"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    className="app-input rounded-xl"
+                    required
+                  />
                 </div>
 
                 <AnimatePresence>
@@ -247,11 +270,11 @@ export default function HomePage() {
                 <Button type="submit" disabled={isSubmitting} className="w-full h-11 mt-auto">
                   {isSubmitting ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" /> Verifying…
+                      <Loader2 className="w-4 h-4 animate-spin" /> Signing in…
                     </>
                   ) : (
                     <>
-                      Join assessment <ArrowRight className="w-4 h-4" />
+                      Sign in to assessment <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </Button>

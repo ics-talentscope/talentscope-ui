@@ -93,10 +93,12 @@ function TableSkeleton({ rows = 8 }: { rows?: number }) {
 
 export function PageLoadingSkeleton({
   label = "Loading",
+  description,
   variant = "page",
   className,
 }: {
   label?: string;
+  description?: string;
   variant?: "page" | "panel" | "cards";
   className?: string;
 }) {
@@ -111,7 +113,10 @@ export function PageLoadingSkeleton({
       aria-busy="true"
       aria-label={label}
     >
-      <span className="sr-only">{label}</span>
+      <div className="space-y-1 text-center">
+        <p className="text-sm font-semibold text-foreground">{label}</p>
+        {description && <p className="text-sm text-muted-foreground">{description}</p>}
+      </div>
       {variant === "cards" ? (
         <>
           <div className="flex items-center gap-3">

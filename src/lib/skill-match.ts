@@ -325,6 +325,7 @@ export type ScoreParts = {
 
 export type SkillMatchResult = {
   score: number;
+  strictRequirementsPassed: boolean;
   matchingSkills: string[];
   matchedCount: number;
   requiredCount: number;
@@ -336,6 +337,16 @@ export type SkillMatchResult = {
   skillBreakdown: SkillBreakdownItem[];
   bonusSkills: string[];
   scoreParts: ScoreParts;
+};
+
+export type ExperiencePeriod = {
+  startDate?: string | null;
+  endDate?: string | null;
+  current?: boolean | null;
+  position?: string | null;
+  company?: string | null;
+  description?: string | null;
+  technologies?: string[];
 };
 
 const EMPTY_SCORE_PARTS: ScoreParts = {
@@ -351,6 +362,7 @@ const EMPTY_SCORE_PARTS: ScoreParts = {
 function emptyMatch(rationale = "No skills or requirement text to score."): SkillMatchResult {
   return {
     score: 0,
+    strictRequirementsPassed: false,
     matchingSkills: [],
     matchedCount: 0,
     requiredCount: 0,
@@ -399,6 +411,10 @@ function canonicalizeToken(raw: string): string {
   const compact = t.replace(/[\s._-]/g, "");
   if (CANONICAL_ALIASES[compact]) return CANONICAL_ALIASES[compact];
   return t;
+}
+
+export function canonicalSkillKey(raw: string): string {
+  return canonicalizeToken(raw) || String(raw || "").toLowerCase().trim();
 }
 
 function splitSkillList(line: string): string[] {
@@ -772,6 +788,9 @@ export function employeeMatchText(emp: {
   department?: string | null;
   role?: string | null;
   grade?: string | null;
+  experience?: ExperiencePeriod[] | null;
+  yearsExperience?: number | string | null;
+  years_experience?: number | string | null;
 }): string {
   const skip = new Set(["", "general", "employee", "beginner"]);
   const chips = employeeSkillChips(emp.skills).slice(0, 48).join(", ");
@@ -779,7 +798,21 @@ export function employeeMatchText(emp: {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1600);
-  return [chips || skillsBlob, skillsBlob && chips ? skillsBlob : "", emp.designation, emp.role, emp.grade, emp.product]
+  const experienceText = (emp.experience || [])
+    .map((period) =>
+      [
+        period.position,
+        period.company,
+        period.description,
+        ...(period.technologies || []),
+        period.startDate,
+        period.endDate || (period.current ? "Present" : ""),
+      ].filter(Boolean).join(" ")
+    )
+    .join(". ");
+  const statedYears = emp.yearsExperience ?? emp.years_experience;
+  const yearsText = statedYears == null ? "" : `${statedYears} years of experience`;
+  return [chips || skillsBlob, skillsBlob && chips ? skillsBlob : "", emp.designation, emp.role, emp.grade, emp.product, yearsText, experienceText]
     .map((v) => String(v || "").trim())
     .filter((v) => v && !skip.has(v.toLowerCase()))
     .join(". ");
@@ -801,6 +834,9 @@ export function candidateMatchText(row: {
       position?: string | null;
       company?: string | null;
       description?: string | null;
+      startDate?: string | null;
+      endDate?: string | null;
+      current?: boolean | null;
       technologies?: string[];
       bulletPoints?: Array<{ text?: string | null }>;
     }>;
@@ -827,6 +863,8 @@ export function candidateMatchText(row: {
       job.position,
       job.company,
       job.description,
+      job.startDate,
+      job.endDate,
       ...(job.technologies || []),
       ...(job.bulletPoints || []).map((b) => b.text),
     ]),
@@ -988,6 +1026,92 @@ function parseYears(text: string): number | null {
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+function experienceMonth(value: string | null | undefined): number | null {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (/\b(present|current|now)\b/i.test(text)) {
+    const now = new Date();
+    return now.getFullYear() * 12 + now.getMonth();
+  }
+
+  const yearFirst = text.match(/\b((?:19|20)\d{2})[-/](\d{1,2})\b/);
+  if (yearFirst) {
+    const month = Number(yearFirst[2]);
+    return month >= 1 && month <= 12 ? Number(yearFirst[1]) * 12 + month - 1 : null;
+  }
+
+  const monthFirst = text.match(/\b(\d{1,2})[-/]((?:19|20)\d{2})\b/);
+  if (monthFirst) {
+    const month = Number(monthFirst[1]);
+    return month >= 1 && month <= 12 ? Number(monthFirst[2]) * 12 + month - 1 : null;
+  }
+
+  const namedMonth = text.match(/\b([A-Za-z]{3,9})[,. ]+((?:19|20)\d{2})\b/);
+  if (namedMonth) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const month = months.indexOf(namedMonth[1].slice(0, 3).toLowerCase());
+    if (month >= 0) return Number(namedMonth[2]) * 12 + month;
+  }
+
+  const yearOnly = text.match(/\b((?:19|20)\d{2})\b/);
+  return yearOnly ? Number(yearOnly[1]) * 12 : null;
+}
+
+export function profileExperienceYears(
+  periods: readonly ExperiencePeriod[] | undefined,
+  explicitYears: number | string | null | undefined,
+  profileText: string
+): number | null {
+  if (typeof explicitYears === "number" && Number.isFinite(explicitYears) && explicitYears >= 0) {
+    return explicitYears;
+  }
+  if (typeof explicitYears === "string") {
+    const numeric = explicitYears.trim().match(/^(\d+(?:\.\d+)?)$/);
+    const stated = numeric || explicitYears.match(/(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)\b/i);
+    if (stated) return Number(stated[1]);
+  }
+
+  const intervals = (periods || [])
+    .map((period) => {
+      const start = experienceMonth(period.startDate);
+      const end = experienceMonth(period.endDate) ?? (period.current ? experienceMonth("Present") : null);
+      return start != null && end != null && end >= start ? [start, end] as const : null;
+    })
+    .filter((interval): interval is readonly [number, number] => interval !== null)
+    .sort((a, b) => a[0] - b[0]);
+
+  if (intervals.length) {
+    let totalMonths = 0;
+    let [start, end] = intervals[0];
+    for (const [nextStart, nextEnd] of intervals.slice(1)) {
+      if (nextStart <= end + 1) {
+        end = Math.max(end, nextEnd);
+      } else {
+        totalMonths += end - start;
+        start = nextStart;
+        end = nextEnd;
+      }
+    }
+    totalMonths += end - start;
+    return Math.floor((totalMonths / 12) * 10) / 10;
+  }
+
+  return parseYears(profileText);
+}
+
+export function extractJdRequiredExperienceYears(jdText: string): number | null {
+  const text = String(jdText || "");
+  const patterns = [
+    /\b(?:minimum|min\.?|at least)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:years?|yrs?)\b/gi,
+    /\b(\d+(?:\.\d+)?)\s*(?:\+|plus|[-–—]\s*\d+(?:\.\d+)?)?\s*(?:years?|yrs?)\s*(?:of\s+)?(?:(?:relevant|professional|work|overall|total)\s+)?experience\b/gi,
+    /\b(?:experience|exp)\s*(?:(?:required|minimum|min)\s*)?(?:of|:|=)?\s*(\d+(?:\.\d+)?)\s*(?:\+|plus|[-–—]\s*\d+(?:\.\d+)?)?\s*(?:years?|yrs?)\b/gi,
+  ];
+  const values = patterns.flatMap((pattern) =>
+    [...text.matchAll(pattern)].map((match) => Number(match[1])).filter(Number.isFinite)
+  );
+  return values.length ? Math.max(...values) : null;
 }
 
 function parseGrade(text: string): number | null {
@@ -1178,7 +1302,8 @@ export function compileJdForMatch(jdSkills: string): CompiledJd {
 export function calculateSkillMatch(
   employeeSkills: string,
   jdSkills: string,
-  compiled?: CompiledJd
+  compiled?: CompiledJd,
+  verifiedExperienceYears?: number | null
 ): SkillMatchResult {
   if (!employeeSkills?.trim() || !jdSkills?.trim()) {
     return emptyMatch();
@@ -1238,7 +1363,14 @@ export function calculateSkillMatch(
     0.1 * level
   );
 
-  const years = parseYears(emp.raw);
+  const years = verifiedExperienceYears ?? parseYears(emp.raw);
+  const mandatorySkills = extractJdMandatorySkills(jd.jdText);
+  const missingMandatorySkills = mandatorySkills.filter(
+    (skill) => skillCredit(emp, canonicalizeToken(skill) || skill) < 0.7
+  );
+  const requiredExperienceYears = extractJdRequiredExperienceYears(jd.jdText);
+  const experienceNotVerified =
+    requiredExperienceYears != null && (years == null || years < requiredExperienceYears);
   if (jdFamily === "fullstack" && fullstackSides < 100) {
     score = Math.min(score, 72);
     if (years != null && years < 3) score = Math.min(score, 58);
@@ -1272,6 +1404,9 @@ export function calculateSkillMatch(
   if ((jdFamily === "devops" || jdFamily === "qa") && titleCoverage < 0.45) {
     score = Math.min(score, 50);
   }
+  if (missingMandatorySkills.length > 0 || experienceNotVerified) {
+    score = Math.min(score, QUALIFIED_COVERAGE_PERCENT - 1);
+  }
 
   score = Math.max(0, Math.min(100, score));
 
@@ -1293,6 +1428,16 @@ export function calculateSkillMatch(
       : "no solid technical hits",
   ];
   if (missingCore.length) rationaleParts.push(`missing or weak: ${missingCore.join(", ")}`);
+  if (missingMandatorySkills.length) {
+    rationaleParts.push(`mandatory skills not verified: ${missingMandatorySkills.map(prettySkill).join(", ")}`);
+  }
+  if (experienceNotVerified && requiredExperienceYears != null) {
+    rationaleParts.push(
+      years == null
+        ? `minimum ${requiredExperienceYears} years of experience not verified in the profile`
+        : `minimum ${requiredExperienceYears} years required; profile verifies ${years} years`
+    );
+  }
   if (alignment.relation === "mismatch") {
     rationaleParts.push(
       isTechnicalFamily(jdFamily) && !isTechnicalFamily(personFamily)
@@ -1347,6 +1492,7 @@ export function calculateSkillMatch(
 
   return {
     score,
+    strictRequirementsPassed: missingMandatorySkills.length === 0 && !experienceNotVerified,
     matchingSkills,
     matchedCount: matchedFull.length,
     requiredCount: scoredSkills.length,

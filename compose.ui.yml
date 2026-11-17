@@ -1,0 +1,4 @@
+services:
+  ui:
+    ports: !override
+      - "127.0.0.1:${UI_PORT:?UI_PORT must be set}:3000"

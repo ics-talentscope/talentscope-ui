@@ -3,8 +3,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ResultsView, ConfirmModal, type ResultReviewItem } from "@/components/test-view";
-import { CheckCircle2, Clock, Flag, XCircle, Zap, ArrowRight, RotateCcw,
+import { ResultsView, type ResultReviewItem } from "@/components/test-view";
+import { CheckCircle2, Clock, Flag, XCircle, Zap, ArrowRight,
   Loader2, AlertTriangle, Send, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageLoadingSkeleton } from "@/components/ui/skeleton";
@@ -35,17 +35,18 @@ function buildReviewItems(
   const byQuestionId = new Map((attempts ?? []).map((a) => [a.question_id, a]));
   return [...questions]
     .sort((a, b) => a.question_index - b.question_index)
-    .map((q, idx) => {
+    .flatMap((q, idx) => {
       const attempt = byQuestionId.get(q.id);
       const selected =
         attempt?.selected_option_index ??
         answersByIndex?.[q.question_index] ??
         answersByIndex?.[idx] ??
         null;
+      if (selected == null) return [];
       const isCorrect =
         attempt?.is_correct ??
-        (selected == null ? null : selected === q.correct_option_index);
-      return {
+        (q.correct_option_index == null ? null : selected === q.correct_option_index);
+      return [{
         question_index: q.question_index ?? idx,
         question_text: q.question_text,
         options: q.options ?? [],
@@ -53,7 +54,7 @@ function buildReviewItems(
         correct_option_index: q.correct_option_index ?? null,
         explanation: q.explanation,
         is_correct: isCorrect,
-      };
+      }];
     });
 }
 
@@ -76,6 +77,55 @@ function countdown(seconds: number): string {
 interface LoadedState {
   test: Test;
   questions: TestQuestion[];
+}
+
+async function fetchTestWithBuffering(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  bufferOnLoad: boolean,
+  setBufferStatus: (status: string | null) => void,
+  isCancelled: () => boolean,
+): Promise<Response | null> {
+  const retryDelays = bufferOnLoad ? [500, 1000, 1500, 2000, 3000, 4000] : [];
+  for (let attempt = 0; ; attempt += 1) {
+    if (isCancelled()) return null;
+    if (attempt > 0) {
+      setBufferStatus(`Waiting for your test to sync (${attempt}/${retryDelays.length})…`);
+      await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1]));
+      if (isCancelled()) return null;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(input, { ...init, cache: "no-store" });
+    } catch (error) {
+      if (isCancelled()) return null;
+      if (attempt < retryDelays.length) continue;
+      setBufferStatus(null);
+      throw error;
+    }
+
+    if (isCancelled()) return null;
+    if (response.ok) {
+      setBufferStatus(null);
+      return response;
+    }
+
+    const body = await response.clone().text();
+    let message = "";
+    try {
+      message = JSON.parse(body).error ?? "";
+    } catch {
+      message = body;
+    }
+    const questionSyncPending =
+      response.status === 400 &&
+      message === "This assessment has no questions assigned yet. Please contact your administrator.";
+    const transientRead = [404, 500, 502, 503, 504].includes(response.status) || questionSyncPending;
+    if (transientRead && attempt < retryDelays.length) continue;
+    setBufferStatus(null);
+    return response;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,15 +153,16 @@ function DifficultyBadge({ d }: { d: string }) {
 // CLIENT SUB-COMPONENT
 // =====================================================================
 
-export default function TestRunnerClient({ testId }: { testId: string }) {
+export default function TestRunnerClient({ testId, bufferOnLoad = false }: { testId: string; bufferOnLoad?: boolean }) {
   const router = useRouter();
 
   // ── state ──────────────────────────────────────────────────────
-  type Phase = "loading" | "ready" | "running" | "submitting" | "retake-confirm" | "submitted" | "error";
+  type Phase = "loading" | "ready" | "running" | "submitting" | "submitted" | "error";
   type VideoUploadState = "pending" | "uploading" | "done" | "failed";
 
   const [phase,       setPhase]       = useState<Phase>("loading");
   const [err,         setErr]         = useState<string | null>(null);
+  const [bufferStatus, setBufferStatus] = useState<string | null>(null);
   const [test,        setTest]        = useState<Test | null>(null);
   const [questions,   setQuestions]   = useState<TestQuestion[] | null>(null);
   const [currentIdx,  setCurrentIdx]  = useState(0);
@@ -130,9 +181,12 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   const submittingRef = useRef(false);
   const endAtRef = useRef<number | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isStartingTest, setIsStartingTest] = useState(false);
   const [expiredOnLoad, setExpiredOnLoad] = useState(false);
 
   const [token,       setToken]       = useState("");
+  const [tokenReady, setTokenReady] = useState(false);
+  const [requiresSignIn, setRequiresSignIn] = useState(false);
   const [initialProctoring, setInitialProctoring] = useState<EmployeeProctoringState | null>(null);
 
   const [clmReady, setClmReady] = useState(false);
@@ -147,6 +201,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
 
   useEffect(() => {
     setToken(window.localStorage.getItem("employee_token") ?? "");
+    setTokenReady(true);
   }, []);
   const requestFullscreen = useCallback(async () => {
     try {
@@ -190,16 +245,26 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
 
   // ── fetch test + questions ─────────────────────────────────────
   useEffect(() => {
-    if (!token) return;
+    if (!tokenReady) return;
+    if (!token) {
+      setRequiresSignIn(true);
+      setErr("You are not signed in to the employee portal. Sign in, then reopen your assessment.");
+      setPhase("error");
+      return;
+    }
     let cancelled = false;
     (async () => {
+      const fetchWithBuffer = (input: RequestInfo | URL, init?: RequestInit) =>
+        fetchTestWithBuffering(input, init, bufferOnLoad, setBufferStatus, () => cancelled);
       try {
-        const r = await fetch(`/api/employee/tests/${testId}`, {
+        const r = await fetchWithBuffer(`/api/employee/tests/${testId}`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
         });
+        if (!r || cancelled) return;
         if (!r.ok) {
+          if (r.status === 401 || r.status === 403) setRequiresSignIn(true);
           const errBody = await r.text();
           let message = "Failed to load test";
           try {
@@ -265,7 +330,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       cancelled = true;
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [testId, token]);
+  }, [testId, token, tokenReady, bufferOnLoad]);
 
   // ── auto-save progress every 10 s ─────────────────────────────
   useEffect(() => {
@@ -469,6 +534,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   }, [finalizeRecordingBlob, uploadRecordingBlob]);
 
   const handleStartTest = async () => {
+    if (isStartingTest) return;
+    setIsStartingTest(true);
     submittingRef.current = false;
     setCameraError(null);
     let stream: MediaStream;
@@ -489,11 +556,13 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
               ? "Your camera is being used by another application. Close it and press Start again."
               : "A working camera is required for this assessment. Check your camera and browser permissions, then try again."
       );
+      setIsStartingTest(false);
       return;
     }
     if (stream.getVideoTracks().every((t) => t.readyState !== "live")) {
       stream.getTracks().forEach((t) => t.stop());
       setCameraError("Your camera is not producing video. Check that it is on and not covered, then press Start again.");
+      setIsStartingTest(false);
       return;
     }
     try {
@@ -531,7 +600,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
     if (test && test.status === "pending") {
       const startTime = new Date().toISOString();
       try {
-        await fetch(`/api/employee/tests/${testId}`, {
+        const response = await fetch(`/api/employee/tests/${testId}`, {
           method: "PATCH",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -543,8 +612,24 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
             camera_granted: true,
           }),
         });
+        const responseBody = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(responseBody?.error || "The assessment service did not confirm the start.");
+        }
       } catch (err) {
-        console.warn("Failed to update test start time in database:", err);
+        console.error("Failed to update test start time in database:", err);
+        await finalizeRecordingBlob();
+        stream.getTracks().forEach((track) => track.stop());
+        setCamStream(null);
+        mediaRecorderRef.current = null;
+        if (document.fullscreenElement) {
+          await document.exitFullscreen().catch(() => {});
+        }
+        setCameraError(err instanceof Error
+          ? `Your assessment could not be started: ${err.message} Please check your connection and try again.`
+          : "Your assessment could not be started. Please check your connection and try again.");
+        setIsStartingTest(false);
+        return;
       }
       endAtRef.current = Date.now() + limit * 1000;
       setTimeLeft(limit);
@@ -554,6 +639,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
 
     setPhase("running");
     setAwaitingFullscreen(!isFullscreenActive());
+    setIsStartingTest(false);
   };
 
   // ── handlers ───────────────────────────────────────────────────
@@ -617,7 +703,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
           accuracy_pct: res.accuracy ?? 0,
           topic_title: (test as any)?.topic_title ?? "",
         });
-        setReviewItems(buildReviewItems(questions, null, ans));
+        setReviewItems(buildReviewItems(res.questions, res.attempts));
         if (document.fullscreenElement) {
           document.exitFullscreen().catch(() => {});
         }
@@ -634,7 +720,7 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         ai_analysis: res.ai_analysis,
         topic_title: (test as any)?.topic_title ?? "",
       });
-      setReviewItems(buildReviewItems(questions, null, ans));
+      setReviewItems(buildReviewItems(res.questions, res.attempts));
       if (document.fullscreenElement) {
         document.exitFullscreen().catch(() => {});
       }
@@ -676,7 +762,10 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   if (phase === "loading") {
     return (
       <div className="py-16 mx-auto max-w-3xl">
-        <PageLoadingSkeleton label="Preparing your test" />
+        <PageLoadingSkeleton
+          label={bufferStatus ? "Preparing your assessment" : "Loading your assessment"}
+          description={bufferStatus || "Loading your assigned questions and checking your saved progress. Please keep this page open; you do not need to refresh."}
+        />
       </div>
     );
   }
@@ -696,7 +785,10 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   if (!currentQ && phase === "running") {
     return (
       <div className="py-16 mx-auto max-w-3xl">
-        <PageLoadingSkeleton label="Loading questions" />
+        <PageLoadingSkeleton
+          label="Loading the current question"
+          description="Your assessment is still in progress. Your answers are saved automatically; please keep this page open."
+        />
       </div>
     );
   }
@@ -705,10 +797,11 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
   if (phase === "submitting") {
     return (
       <div className="fixed inset-0 z-[300] flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm px-6">
-        <PageLoadingSkeleton label="Submitting your assessment" className="max-w-lg" />
-        <p className="text-sm text-muted-foreground mt-4 text-center max-w-sm">
-          Saving your answers… Please do not close or refresh this page.
-        </p>
+        <PageLoadingSkeleton
+          label="Submitting your assessment"
+          description="Saving your answers and finalizing your assessment. Please do not close or refresh this page."
+          className="max-w-lg"
+        />
       </div>
     );
   }
@@ -722,50 +815,8 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         reviewItems={reviewItems}
         isArchivedReview={isArchivedReview}
         hideVideoStatus={isArchivedReview}
-        retakeLabel={isArchivedReview ? "Start new attempt" : "Retake"}
-        onRetake={() => {
-          if (isArchivedReview) {
-            window.location.href = "/employee/dashboard";
-            return;
-          }
-          setPhase("retake-confirm");
-          setSubmitted(null);
-          setAnswers({});
-          setCurrentIdx(0);
-          setVideoUploadState("pending");
-        }}
         onGoDashboard={() => window.location.href = "/employee/dashboard"}
       />
-    );
-  }
-
-  // ── phase: retake confirm ───────────────────────────────────────
-  if (phase === "retake-confirm") {
-    return (
-      <div className="max-w-xl mx-auto">
-        <ConfirmModal
-          onConfirm={async () => {
-            try {
-              const res = await fetch(`/api/employee/tests/${testId}`, {
-                method: "DELETE",
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                },
-              });
-              if (res.ok) {
-                window.location.reload();
-                return;
-              }
-            } catch (err) {
-              console.error("Failed to reset test:", err);
-            }
-            submittingRef.current = false;
-            setPhase("ready");
-            setAnswers({}); setCurrentIdx(0); setFlags(new Set()); setErr(null); setMsg(null);
-          }}
-          onCancel={() => setPhase("submitted")}
-        />
-      </div>
     );
   }
 
@@ -775,7 +826,11 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
       <div className="py-16 mx-auto max-w-md text-center space-y-6">
         <XCircle className="w-10 h-10 text-red-500 mx-auto" />
         <p className="text-red-600 font-medium">{err}</p>
-        <Button onClick={() => window.location.reload()}>Retry</Button>
+        {requiresSignIn ? (
+          <Button onClick={() => router.push("/employee?mode=signin")}>Sign in to Employee Portal</Button>
+        ) : (
+          <Button onClick={() => window.location.reload()}>Retry</Button>
+        )}
       </div>
     );
   }
@@ -827,12 +882,21 @@ export default function TestRunnerClient({ testId }: { testId: string }) {
         )}
         <Button
           onClick={handleStartTest}
+          disabled={isStartingTest}
           size="lg"
           className="w-full max-w-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-md h-12 gap-2"
         >
-          {test?.status === "in_progress" ? "Resume Assessment" : "Start Assessment"}{" "}
-          <ArrowRight className="w-4 h-4" />
+          {isStartingTest ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Preparing Assessment…</>
+          ) : (
+            <>{test?.status === "in_progress" ? "Resume Assessment" : "Start Assessment"} <ArrowRight className="w-4 h-4" /></>
+          )}
         </Button>
+        {isStartingTest && (
+          <p role="status" className="text-sm text-muted-foreground">
+            Setting up your camera and secure assessment session. Please keep this page open.
+          </p>
+        )}
       </div>
     );
   }

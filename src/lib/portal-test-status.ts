@@ -10,7 +10,7 @@ export const PORTAL_TEST_STATUS_FILTER_OPTIONS = [
   { value: "pending", label: "Pending" },
   { value: "not_started", label: "Not Started" },
   { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
+  { value: "completed", label: "Test Completed" },
   { value: "unassigned", label: "Unassigned" },
 ] as const;
 
@@ -74,7 +74,7 @@ export function mapBackendTestStatus(raw: string | null | undefined): PortalTest
 export function getPortalTestStatusLabel(status: PortalTestStatus | string | null | undefined): string {
   switch (status) {
     case "completed":
-      return "Completed";
+      return "Test Completed";
     case "in_progress":
       return "In Progress";
     case "pending":
