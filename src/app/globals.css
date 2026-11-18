@@ -519,7 +519,7 @@
 }
 
 .admin-launcher-surface {
-  width: min(100%, 980px);
+  width: 100%;
   align-self: flex-start;
   overflow: hidden;
   border: 2px solid rgb(218 231 237 / 0.9) !important;

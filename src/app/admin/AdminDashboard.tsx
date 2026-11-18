@@ -5802,8 +5802,11 @@ export default function AdminDashboard() {
 
   const popularAdminLinks = [
     ...dashboardTabs.filter((tab) =>
-      tab.id === "ingestion" || tab.id === "percentage" || tab.id === "logs"
+      tab.id === "logs"
     ),
+    ...(canManagePortalConfig
+      ? [{ id: "portal-config" as const, label: "Portal Config", icon: faGear }]
+      : []),
     { id: "profile-org-chart" as const, label: "Org Chart", icon: faSitemap },
   ];
 
