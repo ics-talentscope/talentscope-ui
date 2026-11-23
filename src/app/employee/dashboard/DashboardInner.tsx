@@ -365,8 +365,8 @@ export function DashboardInner() {
         {/* ── Tab bar ───────────────────────────────────────────────────── */}
         <div className="flex gap-1 rounded-xl bg-card p-1 w-fit shadow-soft border border-border transition-colors duration-300">
           {([
-            ["analytics", "Analytics", <BarChart3  className="w-4 h-4" />],
-            ["tests",     "My Tests",  <ClipboardList className="w-4 h-4" />],
+            ["analytics", "Analytics", <BarChart3 key="analytics-icon" className="w-4 h-4" />],
+            ["tests",     "My Tests",  <ClipboardList key="tests-icon" className="w-4 h-4" />],
           ] as const).map(([id, label, icon]) => (
             <button
               key={id}

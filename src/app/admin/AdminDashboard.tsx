@@ -87,6 +87,7 @@ import {
 } from "@/lib/admin-accounts";
 import { AdminAccessManager } from "@/components/admin/AdminAccessManager";
 import { EmployeePortalManager } from "@/components/admin/EmployeePortalManager";
+import { SlalomBootcampManager, BOOTCAMP_DATA_CHANGED_EVENT } from "@/components/admin/SlalomBootcampManager";
 import { QuickSearchModal } from "@/components/admin/QuickSearchModal";
 import { isPortalMappingFileName } from "@/lib/portal-mapping-file";
 
@@ -1252,6 +1253,11 @@ export default function AdminDashboard() {
   const canManagePortalConfig = isSuperAdmin || adminPermissions.portalConfig;
   const canViewEmployeePortal = adminPermissions.employeePortal;
   const canChangePassword = adminPermissions.changePassword;
+  // Frontend hint only; the backend tenant context is authoritative for bootcamp data.
+  const isSlalomAdmin =
+    adminEmail.trim().toLowerCase().endsWith("@slalom.com") ||
+    (typeof window !== "undefined" && (window.sessionStorage.getItem("admin-client") || "").toLowerCase() === "slalom");
+  const canManageBootcamp = isSlalomAdmin && adminPermissions.bootcampManagement;
   const [showAccessManager, setShowAccessManager] = useState(false);
   const [showEmployeePortalManager, setShowEmployeePortalManager] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -1357,7 +1363,7 @@ export default function AdminDashboard() {
   } | null>(null);
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<"employee" | "suitable" | "unsuitable" | "outbox" | "requirements" | "logs" | "employee-portal">("requirements");
+  const [activeTab, setActiveTab] = useState<"employee" | "suitable" | "unsuitable" | "outbox" | "requirements" | "logs" | "employee-portal" | "slalom-bootcamp">("requirements");
   const [allTestResults, setAllTestResults] = useState<any[]>([]);
   const [resourcePortalEmployees, setResourcePortalEmployees] = useState<any[]>([]);
   const [resettingTestId, setResettingTestId] = useState<string | null>(null);
@@ -1588,17 +1594,18 @@ export default function AdminDashboard() {
         case "suitable":
         case "unsuitable": return adminPermissions.candidates;
         case "employee-portal": return adminPermissions.employeePortal;
+        case "slalom-bootcamp": return canManageBootcamp;
         case "outbox": return adminPermissions.emailOutbox;
         default: return true;
       }
     },
-    [adminPermissions]
+    [adminPermissions, canManageBootcamp]
   );
-  const anyTabAllowed = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).some(tabAllowed);
+  const anyTabAllowed = (["requirements", "employee", "suitable", "employee-portal", "slalom-bootcamp", "outbox"] as const).some(tabAllowed);
 
   useEffect(() => {
     if (tabAllowed(activeTab)) return;
-    const first = (["requirements", "employee", "suitable", "employee-portal", "outbox"] as const).find(tabAllowed);
+    const first = (["requirements", "employee", "suitable", "employee-portal", "slalom-bootcamp", "outbox"] as const).find(tabAllowed);
     if (first) setActiveTab(first);
   }, [tabAllowed, activeTab]);
 
@@ -2011,6 +2018,15 @@ export default function AdminDashboard() {
     }
   }, [authenticated, adminEmail, selectedJdId, loadEmployees]);
 
+  // Bootcamp edits can change assessment/assignment state shown in the portal; re-fetch it.
+  useEffect(() => {
+    const onBootcampChange = () => {
+      void loadEmployees({ fresh: true, silent: true });
+    };
+    window.addEventListener(BOOTCAMP_DATA_CHANGED_EVENT, onBootcampChange);
+    return () => window.removeEventListener(BOOTCAMP_DATA_CHANGED_EVENT, onBootcampChange);
+  }, [loadEmployees]);
+
   const loadTestAttemptDetails = async (testId: string) => {
     let shouldFetch = true;
     setTestAttemptDetails((prev) => {
@@ -2051,16 +2067,18 @@ export default function AdminDashboard() {
     refreshingType === "employees" ||
     refreshingType === "all";
   const isTabContentLoading =
-    isDashboardBootstrapping ||
-    (activeTab === "employee"
-      ? isEmployeeDataPending && employees.length === 0
-      : activeTab === "employee-portal"
-        ? isEmployeeDataPending && resourcePortalEmployees.length === 0
-        : activeTab === "requirements"
-          ? isJdLoading
-          : activeTab === "outbox"
-            ? isEmailsLoading
-            : loading);
+    activeTab === "slalom-bootcamp"
+      ? false
+      : isDashboardBootstrapping ||
+        (activeTab === "employee"
+          ? isEmployeeDataPending && employees.length === 0
+          : activeTab === "employee-portal"
+            ? isEmployeeDataPending && resourcePortalEmployees.length === 0
+            : activeTab === "requirements"
+              ? isJdLoading
+              : activeTab === "outbox"
+                ? isEmailsLoading
+                : loading);
 
   const portalCompletedDateModel = useMemo(() => {
     const keys = new Set<string>();
@@ -3819,8 +3837,8 @@ export default function AdminDashboard() {
       setModalError("RM Email is required.");
       return;
     }
-    if (!emailToTag.endsWith("@infinite.com")) {
-      setModalError("RM Email must end with @infinite.com");
+    if (!emailToTag.endsWith("@infinite.com") && !emailToTag.endsWith("@slalom.com")) {
+      setModalError("RM Email must end with @infinite.com or @slalom.com");
       return;
     }
 
@@ -5086,13 +5104,15 @@ export default function AdminDashboard() {
   };
 
   const isJdSet = !!jdSavedText.trim();
+  // Default RM identity follows the signed-in admin's client environment.
+  const defaultRmEmail = (adminEmail || "admin@infinite.com").toLowerCase().trim();
 
   const selectedSelectValue = (() => {
     if (!selectedJdId || selectedJdId === "all") return "all";
     if (selectedJdId.includes("@")) return selectedJdId;
     const currentJd = jds.find(j => j.id === selectedJdId);
     if (currentJd) {
-      return (currentJd.rmEmail || "admin@infinite.com").toLowerCase().trim();
+      return (currentJd.rmEmail || defaultRmEmail).toLowerCase().trim();
     }
     return "all";
   })();
@@ -5108,7 +5128,7 @@ export default function AdminDashboard() {
   const activeJdResumes = useMemo(() => {
     return resumes.filter((r) => {
       if (selectedJdId && selectedJdId !== "all" && String(selectedJdId).includes("@")) {
-        const emailJds = jds.filter(j => (j.rmEmail || "admin@infinite.com").toLowerCase().trim() === selectedJdId.toLowerCase().trim());
+        const emailJds = jds.filter(j => (j.rmEmail || defaultRmEmail).toLowerCase().trim() === selectedJdId.toLowerCase().trim());
         const emailJdIds = emailJds.map(j => j.id);
         const emailJdDuplicateIds = emailJds.flatMap(j => Array.isArray(j.duplicateIds) ? j.duplicateIds.map(resolveJdId) : []);
         const candidateJdId = resolveJdId(r.report?.jdId);
@@ -5148,14 +5168,14 @@ export default function AdminDashboard() {
   const filteredJds = jds.filter((j) => {
     if (selectedJdId && selectedJdId !== "all") {
       if (selectedJdId.includes("@")) {
-        return (j.rmEmail || "admin@infinite.com").toLowerCase().trim() === selectedJdId.toLowerCase().trim();
+        return (j.rmEmail || defaultRmEmail).toLowerCase().trim() === selectedJdId.toLowerCase().trim();
       }
       const activeJd = jds.find(item => item.id === selectedJdId);
-      const activeRmEmail = activeJd?.rmEmail || "admin@infinite.com";
-      if (activeRmEmail.toLowerCase().trim() === "admin@infinite.com") {
+      const activeRmEmail = activeJd?.rmEmail || defaultRmEmail;
+      if (activeRmEmail.toLowerCase().trim() === defaultRmEmail) {
         return true;
       }
-      return (j.rmEmail || "admin@infinite.com").toLowerCase().trim() === activeRmEmail.toLowerCase().trim();
+      return (j.rmEmail || defaultRmEmail).toLowerCase().trim() === activeRmEmail.toLowerCase().trim();
     }
     return true;
   });
@@ -5817,7 +5837,7 @@ export default function AdminDashboard() {
       {showAccessManager && canManagePortalConfig && (
         <AdminAccessManager onClose={() => setShowAccessManager(false)} fetcher={adminFetch} />
       )}
-      {showEmployeePortalManager && canViewEmployeePortal && canManagePortalConfig && (
+      {showEmployeePortalManager && canViewEmployeePortal && (canManagePortalConfig || canManageBootcamp) && (
         <EmployeePortalManager
           onClose={() => {
             setShowEmployeePortalManager(false);
@@ -5934,6 +5954,19 @@ export default function AdminDashboard() {
                       : resourcePortalEmployees.length ||
                         Array.from(new Set(allTestResults.map((t) => t.employeeId))).length}
                   </Badge>
+                </button>
+                )}
+                {canManageBootcamp && (
+                <button
+                  onClick={() => setActiveTab("slalom-bootcamp")}
+                  className={`min-w-max flex-[1_0_auto] px-2 py-3.5 font-semibold text-xs sm:px-3 sm:text-sm transition-all duration-200 border-b-2 flex flex-nowrap items-center justify-center gap-1.5 text-center leading-tight whitespace-nowrap ${
+                    activeTab === "slalom-bootcamp"
+                      ? "border-primary text-foreground bg-card"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ClipboardList className="w-4 h-4 text-primary" />
+                  Bootcamp Management
                 </button>
                 )}
                 {adminPermissions.emailOutbox && (
@@ -8179,6 +8212,15 @@ export default function AdminDashboard() {
                       </div>
                     </div>
                   </div>
+                ) : activeTab === "slalom-bootcamp" && canManageBootcamp ? (
+                  <SlalomBootcampManager
+                    fetcher={adminFetch}
+                    onOpenEmployeePortalManager={
+                      canViewEmployeePortal && (canManagePortalConfig || canManageBootcamp)
+                        ? () => setShowEmployeePortalManager(true)
+                        : undefined
+                    }
+                  />
                 ) : activeTab === "outbox" ? (
                   isEmailsLoading ? (
                     <PageLoadingSkeleton label="Loading outbox logs" variant="panel" className="py-6" />
@@ -8869,7 +8911,7 @@ export default function AdminDashboard() {
                             setJdSavedText("");
                             setJdText("");
                           } else {
-                            const firstJd = jds.find(j => (j.rmEmail || "admin@infinite.com").toLowerCase().trim() === val.toLowerCase().trim());
+                            const firstJd = jds.find(j => (j.rmEmail || defaultRmEmail).toLowerCase().trim() === val.toLowerCase().trim());
                             if (firstJd) {
                               setJdSavedText(firstJd.jdText);
                               setJdText(firstJd.jdText);
@@ -8885,8 +8927,8 @@ export default function AdminDashboard() {
                         {(() => {
                           const seenEmails = new Set();
                           return jds.reduce((acc: any[], j) => {
-                            const email = (j.rmEmail || "admin@infinite.com").toLowerCase().trim();
-                            if (email !== "admin@infinite.com" && !seenEmails.has(email)) {
+                            const email = (j.rmEmail || defaultRmEmail).toLowerCase().trim();
+                            if (email !== defaultRmEmail && !seenEmails.has(email)) {
                               seenEmails.add(email);
                               acc.push(
                                 <option key={email} value={email} title={email}>

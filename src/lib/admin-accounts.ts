@@ -4,6 +4,7 @@ export const ADMIN_PERMISSIONS = [
   { key: "corpPool", label: "Corp Pool tab" },
   { key: "candidates", label: "Suitable & Non-Suitable Candidates tabs" },
   { key: "employeePortal", label: "Employee Portal tab (employee tests, scores, videos)" },
+  { key: "bootcampManagement", label: "Bootcamp Management (Slalom only — assessments, cohorts, content, leaderboard)" },
   { key: "emailOutbox", label: "Email Outbox tab" },
   { key: "allScreeningData", label: "Everyone's requirements, candidates and emails (untick = only their own)" },
   { key: "adminControls", label: "Admin Controls (ingestion, uploads, match scores, reset candidate)" },

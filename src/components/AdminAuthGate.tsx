@@ -118,6 +118,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
       window.sessionStorage.removeItem(STORAGE_KEY);
       window.sessionStorage.removeItem("admin-email");
       window.sessionStorage.removeItem("admin_token");
+      window.sessionStorage.removeItem("admin-client");
       clearAdminAccessFlags();
       setAuthenticated(false);
     }
@@ -126,8 +127,8 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail.endsWith("@infinite.com")) {
-      setError("Unauthorized domain. Please enter your @infinite.com email.");
+    if (!cleanEmail.endsWith("@infinite.com") && !cleanEmail.endsWith("@slalom.com")) {
+      setError("Unauthorized domain. Use your @infinite.com or @slalom.com email.");
       return;
     }
 
@@ -143,6 +144,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
       if (res.ok && data.token) {
         window.sessionStorage.setItem("admin_token", data.token);
         window.sessionStorage.setItem("admin-email", cleanEmail);
+        if (data.client) window.sessionStorage.setItem("admin-client", data.client);
         window.sessionStorage.setItem(STORAGE_KEY, "true");
         storeAdminAccessFlags(accessFlagsFromPayload(data));
         offerToSavePassword(cleanEmail, password);
@@ -171,6 +173,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
       if (res.ok && data.token) {
         window.sessionStorage.setItem("admin_token", data.token);
         window.sessionStorage.setItem("admin-email", promptEmail);
+        if (data.client) window.sessionStorage.setItem("admin-client", data.client);
         window.sessionStorage.setItem(STORAGE_KEY, "true");
         storeAdminAccessFlags(accessFlagsFromPayload(data));
         offerToSavePassword(promptEmail, promptPassword);
@@ -200,6 +203,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
       window.sessionStorage.removeItem(STORAGE_KEY);
       window.sessionStorage.removeItem("admin-email");
       window.sessionStorage.removeItem("admin_token");
+      window.sessionStorage.removeItem("admin-client");
       clearAdminAccessFlags();
     }
     setAuthenticated(false);
@@ -494,7 +498,7 @@ export default function AdminAuthGate({ children }: { children: React.ReactNode 
                 name="email"
                 autoComplete="username"
                 type="email"
-                placeholder="e.g. user@infinite.com"
+                placeholder="user@infinite.com or user@slalom.com"
                 value={email}
                 autoFocus
                 onChange={(event) => setEmail(event.target.value)}

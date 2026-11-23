@@ -468,7 +468,7 @@ export default function TestRunnerClient({ testId, bufferOnLoad = false }: { tes
     token,
     phase,
     answersRef,
-    onAutoSubmit: (ans) => handleSubmitRef.current(ans),
+    onAutoSubmit: (ans) => handleSubmitRef.current(ans, { autoSubmitted: true }),
     requestFullscreen,
     videoRef,
     camStream,
@@ -653,7 +653,12 @@ export default function TestRunnerClient({ testId, bufferOnLoad = false }: { tes
   ) {
     if (submittingRef.current) return;
     const answerEntries = Object.entries(ans);
-    const isAuto = opts?.autoSubmitted === true || opts?.timeExpired === true;
+    // Violation auto-submits must survive stale `warningCount` closures and must
+    // be allowed through even when the candidate has not answered any question.
+    const isAuto =
+      opts?.autoSubmitted === true ||
+      opts?.timeExpired === true ||
+      warningCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS;
     if (answerEntries.length === 0 && !isAuto) {
       setErr("Please answer at least one question before submitting.");
       return;

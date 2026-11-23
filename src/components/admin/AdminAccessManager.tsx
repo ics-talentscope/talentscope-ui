@@ -155,7 +155,7 @@ function AdminCard({ admin, fetcher, onSaved }: { admin: AdminRow; fetcher: Fetc
           autoComplete="off"
           value={aliasesText}
           onChange={(e) => setAliasesText(e.target.value)}
-          placeholder="e.g. aryan.mishra@infinite.com if account email differs"
+          placeholder="e.g. user@infinite.com or user@slalom.com if account email differs"
           className={inputClass}
         />
         <p className="text-[10px] text-muted-foreground">
@@ -324,7 +324,7 @@ export function AdminAccessManager({ onClose, fetcher }: { onClose: () => void; 
                   autoComplete="off"
                   value={newEmail}
                   onChange={(e) => setNewEmail(e.target.value)}
-                  placeholder="name@infinite.com"
+                  placeholder="name@infinite.com or name@slalom.com"
                   className={inputClass}
                   required
                 />

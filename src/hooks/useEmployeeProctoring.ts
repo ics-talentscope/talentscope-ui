@@ -170,7 +170,8 @@ export function useEmployeeProctoring(options: {
 
         if (
           !isFaceMissing &&
-          nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS &&
+          (serverState?.autoSubmitted === true ||
+            nextCount >= EMPLOYEE_PROCTOR_MAX_VIOLATIONS) &&
           !autoSubmitTriggeredRef.current
         ) {
           autoSubmitTriggeredRef.current = true;

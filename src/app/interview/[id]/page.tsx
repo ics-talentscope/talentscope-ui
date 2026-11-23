@@ -360,6 +360,7 @@ export default function CandidatePortal() {
         setCurrentStep(saved.currentStep);
         setCurrentIndex(saved.currentIndex);
         setSecondsLeft(saved.secondsLeft);
+        warningCountRef.current = saved.warningCount;
         setWarningCount(saved.warningCount);
         setViolations(saved.violations || []);
         setIdImageBase64(saved.idImageBase64);
@@ -541,6 +542,12 @@ export default function CandidatePortal() {
     exitFullscreen();
   };
 
+  // Finalize through a ref so a stale `finalizeInterview` closure cannot swallow
+  // the auto-submit; the guard prevents duplicate finalizes from batched strikes.
+  const autoFinalizeTriggeredRef = useRef(false);
+  const finalizeInterviewRef = useRef<() => void>(() => {});
+  finalizeInterviewRef.current = finalizeInterview;
+
   const triggerProctorEvent = useCallback(async (
     violationType: string,
     duration: number,
@@ -576,45 +583,45 @@ export default function CandidatePortal() {
       "Copy/Paste Attempted"
     ].includes(violationType);
 
-    setWarningCount(prevCount => {
-      const newCount = typeof customWarningCount === 'number' && !adminOnly
-        ? customWarningCount
-        : (isWarningStrike ? prevCount + 1 : prevCount);
-      const timestamp = new Date().toISOString();
+    const newCount = typeof customWarningCount === 'number' && !adminOnly
+      ? customWarningCount
+      : (isWarningStrike ? warningCountRef.current + 1 : warningCountRef.current);
+    warningCountRef.current = newCount;
+    const timestamp = new Date().toISOString();
 
-      // Always persist for admin audit (silent for candidate when adminOnly)
-      interviewFetch(`/api/interview/${resumeId}/proctor_violation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          violationType,
-          warningCount: newCount,
-          timestamp,
-          duration: parseFloat(duration.toFixed(1)),
-          confidence: parseFloat(confidence.toFixed(2)),
-          description,
-          videoTimestamp: parseFloat(elapsedSeconds.toFixed(1)),
-          silent: adminOnly,
-        })
-      }).catch(err => console.error("Failed to log proctor violation:", err));
+    // Always persist for admin audit (silent for candidate when adminOnly)
+    interviewFetch(`/api/interview/${resumeId}/proctor_violation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        violationType,
+        warningCount: newCount,
+        timestamp,
+        duration: parseFloat(duration.toFixed(1)),
+        confidence: parseFloat(confidence.toFixed(2)),
+        description,
+        videoTimestamp: parseFloat(elapsedSeconds.toFixed(1)),
+        silent: adminOnly,
+      })
+    }).catch(err => console.error("Failed to log proctor violation:", err));
 
-      setViolations(prev => [
-        ...prev,
-        { type: violationType, timestamp, warningCount: newCount }
-      ]);
+    setWarningCount(newCount);
+    setViolations(prev => [
+      ...prev,
+      { type: violationType, timestamp, warningCount: newCount }
+    ]);
 
-      // Auto-submit only on integrity strikes, never on silent behavioral logs
-      if (!adminOnly && newCount >= 3) {
-        setTimeout(() => {
-          finalizeInterview();
-          setShowEndConfirm(false);
-          setShowReviewModal(false);
-          setShowSubmitWithoutRunConfirm(false);
-        }, 1000);
-      }
-
-      return newCount;
-    });
+    // Auto-submit only on integrity strikes, never on silent behavioral logs.
+    // The ref guard prevents duplicate finalizes from batched violations.
+    if (!adminOnly && newCount >= 3 && !autoFinalizeTriggeredRef.current) {
+      autoFinalizeTriggeredRef.current = true;
+      setTimeout(() => {
+        finalizeInterviewRef.current();
+        setShowEndConfirm(false);
+        setShowReviewModal(false);
+        setShowSubmitWithoutRunConfirm(false);
+      }, 1000);
+    }
   }, [interviewEnded, currentStep, resumeId]);
 
   // Backward compatible wrapper for legacy calls
