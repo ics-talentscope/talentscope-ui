@@ -297,7 +297,7 @@
 .admin-dashboard-signout {
   position: fixed;
   z-index: 100;
-  right: 20px;
+  left: 20px;
   bottom: 18px;
   border-color: #111827;
   background: #05070a;
@@ -408,15 +408,17 @@
 
 .admin-dashboard-sidebar {
   display: flex;
+  align-self: stretch;
+  min-height: 420px;
   min-width: 0;
-  max-height: calc(100vh - 103px);
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
 }
 
 .admin-sidebar-role,
-.admin-sidebar-links h2 {
+.admin-sidebar-links h2,
+.admin-sidebar-support summary {
   display: flex;
   min-height: 54px;
   align-items: center;
@@ -430,8 +432,60 @@
 }
 
 .admin-sidebar-role svg,
-.admin-sidebar-links h2 svg {
+.admin-sidebar-links h2 svg,
+.admin-sidebar-support summary svg {
   font-size: 20px;
+}
+
+.admin-sidebar-support {
+  flex: 0 0 auto;
+}
+
+.admin-sidebar-support summary {
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+}
+
+.admin-sidebar-support summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-sidebar-support[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.admin-sidebar-support-links {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.admin-sidebar-support-links a,
+.admin-sidebar-support-links div {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  border: 0;
+  border-bottom: 2px solid rgb(54 78 96 / 0.58);
+  background: rgb(220 232 239 / 0.75);
+  padding: 10px 17px;
+  color: #243d51;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.admin-sidebar-support-links a {
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.admin-sidebar-support-links a:hover {
+  background: rgb(239 246 249 / 0.94);
+  color: #102b41;
 }
 
 .admin-sidebar-profile {
@@ -479,6 +533,10 @@
   flex: 1;
   flex-direction: column;
   gap: 10px;
+}
+
+.admin-sidebar-operations {
+  flex: 0 0 auto;
 }
 
 .admin-sidebar-links h2 {
@@ -539,6 +597,22 @@
   grid-template-columns: minmax(210px, 245px) minmax(0, 1fr);
   gap: 14px;
   padding: 28px 14px 28px;
+}
+
+.admin-dashboard-dedicated-view .admin-dashboard-nav,
+.admin-dashboard-dedicated-view .admin-dashboard-sidebar,
+.admin-dashboard-dedicated-view .admin-launcher-grid {
+  display: none;
+}
+
+.admin-dashboard-dedicated-view .admin-dashboard-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.admin-dashboard-dedicated-view[data-workspace="logs"] .admin-launcher-surface,
+.admin-dashboard-dedicated-view[data-workspace="ingestion"] .admin-launcher-surface,
+.admin-dashboard-dedicated-view[data-workspace="percentage"] .admin-launcher-surface {
+  display: none;
 }
 
 .admin-dashboard-content {
@@ -865,7 +939,7 @@
   }
 
   .admin-dashboard-sidebar {
-    max-height: calc(100vh - 79px);
+    max-height: none;
   }
 
   .admin-launcher-grid {
@@ -886,6 +960,7 @@
 
   .admin-dashboard-sidebar {
     max-height: none;
+    min-height: 0;
     gap: 8px;
   }
 
@@ -949,20 +1024,24 @@ html.misty-mountains .admin-launcher-tile > span:last-child {
 }
 
 html.misty-mountains .admin-sidebar-role,
-html.misty-mountains .admin-sidebar-links h2 {
+html.misty-mountains .admin-sidebar-links h2,
+html.misty-mountains .admin-sidebar-support summary {
   background: #30254f;
   color: #ffffff;
 }
 
 html.misty-mountains .admin-sidebar-profile,
-html.misty-mountains .admin-sidebar-link-list button {
+html.misty-mountains .admin-sidebar-link-list button,
+html.misty-mountains .admin-sidebar-support-links a,
+html.misty-mountains .admin-sidebar-support-links div {
   border-color: rgb(48 37 79 / 0.16);
   background: #e8e2f5;
   color: #30254f;
 }
 
 html.misty-mountains .admin-sidebar-link-list button:hover,
-html.misty-mountains .admin-sidebar-link-list button.is-active {
+html.misty-mountains .admin-sidebar-link-list button.is-active,
+html.misty-mountains .admin-sidebar-support-links a:hover {
   background: #d5c9ec;
   color: #261b43;
 }
@@ -1054,20 +1133,24 @@ html.aqua .admin-launcher-tile > span:last-child {
 }
 
 html.aqua .admin-sidebar-role,
-html.aqua .admin-sidebar-links h2 {
+html.aqua .admin-sidebar-links h2,
+html.aqua .admin-sidebar-support summary {
   background: #087c9b;
   color: #ffffff;
 }
 
 html.aqua .admin-sidebar-profile,
-html.aqua .admin-sidebar-link-list button {
+html.aqua .admin-sidebar-link-list button,
+html.aqua .admin-sidebar-support-links a,
+html.aqua .admin-sidebar-support-links div {
   border-color: rgb(0 136 170 / 0.18);
   background: #d1f0f5;
   color: #124556;
 }
 
 html.aqua .admin-sidebar-link-list button:hover,
-html.aqua .admin-sidebar-link-list button.is-active {
+html.aqua .admin-sidebar-link-list button.is-active,
+html.aqua .admin-sidebar-support-links a:hover {
   background: #b7e5ed;
   color: #0c3948;
 }

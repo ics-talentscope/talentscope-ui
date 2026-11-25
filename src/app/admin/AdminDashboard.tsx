@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1145,6 +1146,10 @@ function pickDefaultJd(jdsList: any[]): any | undefined {
 }
 
 export default function AdminDashboard() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedWorkspace = searchParams.get("workspace");
+  const isDedicatedWorkspace = requestedWorkspace !== null;
   const [resumes, setResumes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1291,6 +1296,7 @@ export default function AdminDashboard() {
     | "outbox"
     | "requirements"
     | "logs"
+    | "system-logs"
     | "employee-portal"
     | "ingestion"
     | "percentage"
@@ -1523,6 +1529,7 @@ export default function AdminDashboard() {
         case "reset-candidate": return adminPermissions.adminControls;
         case "portal-config": return canManagePortalConfig;
         case "logs": return adminPermissions.systemLogs && portalSettings.showSystemLogsViewer;
+        case "system-logs": return adminPermissions.systemLogs;
         case "profile-name":
         case "profile-employee-id":
         case "profile-role":
@@ -1537,6 +1544,24 @@ export default function AdminDashboard() {
     },
     [adminPermissions, canManagePortalConfig, portalSettings.showSystemLogsViewer]
   );
+
+  useEffect(() => {
+    if (!requestedWorkspace) {
+      setActiveTab(null);
+      return;
+    }
+    setActiveTab(requestedWorkspace as NonNullable<typeof activeTab>);
+  }, [requestedWorkspace]);
+
+  useEffect(() => {
+    if (
+      requestedWorkspace &&
+      !tabAllowed(requestedWorkspace as NonNullable<typeof activeTab>)
+    ) {
+      router.replace("/admin");
+    }
+  }, [requestedWorkspace, router, tabAllowed]);
+
   const anyTabAllowed = (
     [
       "requirements",
@@ -1550,6 +1575,7 @@ export default function AdminDashboard() {
       "reset-candidate",
       "portal-config",
       "logs",
+      "system-logs",
     ] as const
   ).some(tabAllowed);
 
@@ -1569,6 +1595,7 @@ export default function AdminDashboard() {
         "reset-candidate",
         "portal-config",
         "logs",
+        "system-logs",
       ] as const
     ).find(tabAllowed);
     if (first) setActiveTab(first);
@@ -5801,9 +5828,9 @@ export default function AdminDashboard() {
   ].filter((tab) => tab.allowed);
 
   const popularAdminLinks = [
-    ...dashboardTabs.filter((tab) =>
-      tab.id === "logs"
-    ),
+    ...(adminPermissions.systemLogs
+      ? [{ id: "system-logs" as const, label: "System Logs" }]
+      : []),
     ...(canManagePortalConfig
       ? [{ id: "portal-config" as const, label: "Portal Config", icon: faGear }]
       : []),
@@ -5864,7 +5891,10 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="admin-dashboard-shell min-h-screen font-sans text-foreground transition-colors duration-300">
+      <div
+        className={`admin-dashboard-shell min-h-screen font-sans text-foreground transition-colors duration-300${isDedicatedWorkspace ? " admin-dashboard-dedicated-view" : ""}`}
+        data-workspace={isDedicatedWorkspace ? requestedWorkspace : undefined}
+      >
       <nav className="admin-dashboard-nav app-nav px-5">
         <div className="max-w-full mx-auto relative flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
@@ -5948,19 +5978,10 @@ export default function AdminDashboard() {
             <FontAwesomeIcon icon={faHandshake} aria-hidden="true" />
             <span>HR Partner</span>
           </div>
-          <div className="admin-sidebar-profile">
-            <FontAwesomeIcon icon={faCircleUser} aria-hidden="true" />
-            <div className="min-w-0">
-              <span className="admin-sidebar-eyebrow">Signed in</span>
-              <span className="admin-sidebar-email" title={adminEmail || "Admin"}>
-                {adminEmail || "Admin"}
-              </span>
-            </div>
-          </div>
-          <section className="admin-sidebar-links" aria-label="Popular links">
+          <section className="admin-sidebar-links admin-sidebar-operations" aria-label="Talent Operations Hub">
             <h2>
               <FontAwesomeIcon icon={faLink} aria-hidden="true" />
-              Popular Links
+              Talent Operations Hub
             </h2>
             <div className="admin-sidebar-link-list admin-sidebar-admin-links">
               {popularAdminLinks.map(({ id, label }) => (
@@ -5975,22 +5996,28 @@ export default function AdminDashboard() {
                 </button>
               ))}
             </div>
-            <h2 className="admin-sidebar-subheading">Admin Profile</h2>
-            <div className="admin-sidebar-link-list admin-sidebar-profile-links">
-              {adminProfileTabs.filter(({ id }) => id !== "profile-org-chart").map(({ id, label, icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  aria-current={activeTab === id ? "page" : undefined}
-                  onClick={() => setActiveTab(id)}
-                  className={activeTab === id ? "is-active" : ""}
-                >
-                  <FontAwesomeIcon icon={icon} aria-hidden="true" />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
           </section>
+          <details className="admin-sidebar-support">
+            <summary>
+              <span>Help &amp; Support</span>
+              <ChevronDown aria-hidden="true" />
+            </summary>
+            <div className="admin-sidebar-support-links">
+              <a href="mailto:TalentScope-Support@infinite.com">
+                TalentScope-Support@infinite.com
+              </a>
+              <div>TalentCare: talentcare@infinite.com | +91 98765 43210</div>
+            </div>
+          </details>
+          <div className="admin-sidebar-profile">
+            <FontAwesomeIcon icon={faCircleUser} aria-hidden="true" />
+            <div className="min-w-0">
+              <span className="admin-sidebar-eyebrow">Signed in</span>
+              <span className="admin-sidebar-email" title={adminEmail || "Admin"}>
+                {adminEmail || "Admin"}
+              </span>
+            </div>
+          </div>
         </aside>
 
         <section className="admin-dashboard-content">
@@ -6002,13 +6029,23 @@ export default function AdminDashboard() {
             </h1>
             <p className="admin-view-description">
               {activeTab === null
-                ? "Choose a workspace from the launcher or Popular Links."
+                ? "Choose a workspace from the launcher or Talent Operations Hub."
                 : activeProfileTab
                   ? "Administrator profile information"
                   : "Dashboard workspace"}
             </p>
           </div>
-          {activeTab !== null && (
+          {isDedicatedWorkspace ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/admin", { scroll: false })}
+              className="shrink-0 gap-2 font-semibold"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Admin Dashboard
+            </Button>
+          ) : activeTab !== null ? (
             <button
               type="button"
               className="admin-view-close"
@@ -6018,7 +6055,7 @@ export default function AdminDashboard() {
             >
               <X className="h-4 w-4" />
             </button>
-          )}
+          ) : null}
         </div>
 
         {/* Global Action Toasts */}
@@ -6054,7 +6091,10 @@ export default function AdminDashboard() {
                       role="tab"
                       aria-selected={isActive}
                       aria-controls="admin-dashboard-tab-content"
-                      onClick={() => setActiveTab(id)}
+                      onClick={() => {
+                        setActiveTab(id);
+                        router.push(`/admin?workspace=${encodeURIComponent(id)}`, { scroll: false });
+                      }}
                       className="admin-launcher-tile relative flex min-h-[104px] flex-col items-center justify-center gap-1.5 rounded-md border px-2 py-2 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                     >
                       <span className="admin-launcher-icon relative flex h-14 w-14 items-center justify-center">
@@ -9310,7 +9350,7 @@ export default function AdminDashboard() {
         )}
 
         {/* System Logs Section */}
-        {activeTab === "logs" && portalSettings.showSystemLogsViewer && adminPermissions.systemLogs && (
+        {((activeTab === "logs" && portalSettings.showSystemLogsViewer) || activeTab === "system-logs") && adminPermissions.systemLogs && (
         <Card className="p-6 border-indigo-150 dark:border-slate-800 shadow-md bg-card rounded-3xl relative overflow-hidden mt-8">
           <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500" />
           
