@@ -10,12 +10,12 @@ import {
   Loader2,
   RefreshCcw,
   Trash2,
-  Upload,
   UserPlus,
   Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SlalomCohortWorkspace } from "@/components/admin/SlalomCohortWorkspace";
 
 /** Fired after any bootcamp mutation so AdminDashboard can re-fetch employee portal data. */
 export const BOOTCAMP_DATA_CHANGED_EVENT = "bootcamp-data-changed";
@@ -103,13 +103,6 @@ function formatCell(value: any): string {
   return String(value);
 }
 
-function parseMembers(raw: string): string[] {
-  return raw
-    .split(/[\n,;]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
 function durationToMinutes(row: any): string {
   const seconds = pick(row, "durationSeconds", "duration_seconds", "timeLimitSeconds", "time_limit_seconds");
   if (seconds !== undefined) return String(Math.round(number(seconds) / 60));
@@ -189,7 +182,6 @@ function difficultyTotal(form: AssessmentForm): number {
 }
 
 type CohortForm = { id: string; name: string; description: string };
-const EMPTY_COHORT: CohortForm = { id: "", name: "", description: "" };
 
 type ContentForm = {
   id: string;
@@ -296,7 +288,7 @@ export function SlalomBootcampManager({
   fetcher: Fetcher;
   onOpenEmployeePortalManager?: () => void;
 }) {
-  const [section, setSection] = useState<Section>("assessments");
+  const [section, setSection] = useState<Section>("cohorts");
   const [assessments, setAssessments] = useState<any[]>([]);
   const [cohorts, setCohorts] = useState<any[]>([]);
   const [content, setContent] = useState<any[]>([]);
@@ -309,13 +301,6 @@ export function SlalomBootcampManager({
   const [assessmentForm, setAssessmentForm] = useState<AssessmentForm>(EMPTY_ASSESSMENT);
   const [editingAssessment, setEditingAssessment] = useState(false);
 
-  const [cohortForm, setCohortForm] = useState<CohortForm>(EMPTY_COHORT);
-  const [editingCohort, setEditingCohort] = useState(false);
-  const [bulkCohortId, setBulkCohortId] = useState("");
-  const [bulkMembersText, setBulkMembersText] = useState("");
-  const [assignAssessmentId, setAssignAssessmentId] = useState("");
-  const [assignCohortId, setAssignCohortId] = useState("");
-  const [assignEmployeeText, setAssignEmployeeText] = useState("");
 
   const [contentForm, setContentForm] = useState<ContentForm>(EMPTY_CONTENT);
   const [editingContent, setEditingContent] = useState(false);
@@ -480,94 +465,15 @@ export function SlalomBootcampManager({
     }, `Assessment marked ${status}.`);
   };
 
-  /* ----------------------------------- cohorts -------------------------------- */
-
-  const resetCohortForm = () => {
-    setCohortForm(EMPTY_COHORT);
-    setEditingCohort(false);
-  };
-
-  const saveCohort = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!cohortForm.name.trim()) {
-      setError("Cohort name is required.");
-      return;
-    }
-    const id = cohortForm.id;
-    await run("cohort", async () => {
-      const res = await fetcher(id ? `${BASE}/cohorts/${encodeURIComponent(id)}` : `${BASE}/cohorts`, {
-        method: id ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: cohortForm.name.trim(), description: cohortForm.description.trim() }),
-      });
+  const deleteAssessment = async (row: any) => {
+    const id = text(pick(row, "id", "_id", "assessmentId", "assessment_id"));
+    if (!id || !window.confirm("Delete this assessment from bootcamp management? Employee test attempts and results will be kept.")) return;
+    await run(`delete-assessment-${id}`, async () => {
+      const res = await fetcher(`${BASE}/assessments/${encodeURIComponent(id)}`, { method: "DELETE" });
       await readJson(res);
-      await loadCohorts();
-      resetCohortForm();
-    }, id ? "Cohort updated." : "Cohort created.");
-  };
-
-  const bulkMembers = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const cohortId = bulkCohortId || cohortForm.id;
-    const members = parseMembers(bulkMembersText);
-    if (!cohortId) {
-      setError("Select a cohort first.");
-      return;
-    }
-    if (members.length === 0) {
-      setError("Add at least one employee ID or email.");
-      return;
-    }
-    await run("members", async () => {
-      const res = await fetcher(`${BASE}/cohorts/${encodeURIComponent(cohortId)}/members/bulk`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ members, employeeIds: members, employee_ids: members }),
-      });
-      await readJson(res);
-      await loadCohorts();
-      setBulkMembersText("");
-    }, `Added ${members.length} member${members.length === 1 ? "" : "s"} to the cohort.`);
-  };
-
-  const onRosterFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const content = await file.text();
-      setBulkMembersText((prev) => `${prev}${prev.trim() ? "\n" : ""}${content}`);
-    } catch {
-      setError("Could not read that roster file. Paste the IDs or emails instead.");
-    } finally {
-      event.target.value = "";
-    }
-  };
-
-  const assignAssessment = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const employees = parseMembers(assignEmployeeText);
-    if (!assignAssessmentId) {
-      setError("Select an assessment to assign.");
-      return;
-    }
-    if (!assignCohortId && employees.length === 0) {
-      setError("Choose a cohort or enter at least one employee ID.");
-      return;
-    }
-    await run("assign", async () => {
-      const res = await fetcher(`${BASE}/assessments/${encodeURIComponent(assignAssessmentId)}/assign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cohortId: assignCohortId || null,
-          cohort_id: assignCohortId || null,
-          employeeIds: employees,
-          employee_ids: employees,
-        }),
-      });
-      await readJson(res);
-      await Promise.all([loadAssessments(), loadCohorts()]);
-    }, "Assessment assigned.");
+      await loadAssessments();
+      if (assessmentForm.id === id) resetAssessmentForm();
+    }, "Assessment deleted. Employee test attempts and results were kept.");
   };
 
   /* ---------------------------------- content --------------------------------- */
@@ -634,8 +540,8 @@ export function SlalomBootcampManager({
   /* ---------------------------------- render ---------------------------------- */
 
   const sections: Array<{ key: Section; label: string; icon: React.ComponentType<{ className?: string }>; count: number }> = [
-    { key: "assessments", label: "Assessments", icon: ClipboardList, count: assessments.length },
     { key: "cohorts", label: "Cohorts", icon: Users, count: cohorts.length },
+    { key: "assessments", label: "Assessments", icon: ClipboardList, count: assessments.length },
     { key: "content", label: "Learning Content", icon: BookOpen, count: content.length },
     { key: "leaderboard", label: "Leaderboard", icon: RefreshCcw, count: leaderboard.length },
   ];
@@ -648,7 +554,7 @@ export function SlalomBootcampManager({
             <ClipboardList className="w-5 h-5 text-violet-600" /> Bootcamp Management
           </h2>
           <p className="mt-1 text-xs text-muted-foreground max-w-2xl">
-            Create assessments, organise cohorts, manage learning sources and review proctored results. Published changes are picked up by the employee portal on its next refresh.
+            Work through a cohort in order: create the cohort, add its learners, assign assessments, then track progress. Assessments and learning content are maintained as shared libraries. Published changes are picked up by the employee portal on its next refresh.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -758,6 +664,9 @@ export function SlalomBootcampManager({
                                   Close
                                 </Button>
                               )}
+                              <Button type="button" size="sm" variant="outline" onClick={() => void deleteAssessment(row)} disabled={busy !== ""} className="h-7 gap-1 border-red-200 text-[10px] font-bold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
+                                <Trash2 className="w-3 h-3" /> Delete
+                              </Button>
                             </div>
                           </div>
                         </div>
@@ -849,122 +758,15 @@ export function SlalomBootcampManager({
 
           {/* -------------------------------- Cohorts ------------------------------- */}
           {section === "cohorts" && (
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]">
-              <div className="space-y-3">
-                <h3 className="text-sm font-bold text-foreground">Cohorts ({cohorts.length})</h3>
-                {cohorts.length === 0 ? (
-                  <p className="rounded-2xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
-                    No cohorts yet. Create one using the form.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {cohorts.map((row, index) => {
-                      const item = cohortFromRow(row);
-                      const members = pick(row, "memberCount", "member_count", "members", "employeeIds", "employee_ids");
-                      const memberCount = Array.isArray(members) ? members.length : members === undefined ? "—" : text(members);
-                      return (
-                        <div key={item.id || `cohort-${index}`} className={cardClass}>
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-bold text-foreground truncate">{item.name || "Untitled cohort"}</div>
-                              <div className="mt-1 text-[11px] text-muted-foreground">
-                                {memberCount} member{Number(memberCount) === 1 ? "" : "s"}
-                                {item.description ? ` · ${item.description}` : ""}
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              <Button type="button" size="sm" variant="outline" onClick={() => { setBulkCohortId(item.id); setAssignCohortId(item.id); }} className="h-7 text-[10px] font-bold">
-                                Select
-                              </Button>
-                              <Button type="button" size="sm" variant="outline" onClick={() => { setCohortForm(item); setEditingCohort(true); }} className="h-7 gap-1 text-[10px] font-bold">
-                                <Edit2 className="w-3 h-3" /> Edit
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-4">
-                <form onSubmit={saveCohort} className={`${cardClass} space-y-3`}>
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold">{editingCohort ? "Edit cohort" : "New cohort"}</h3>
-                    {editingCohort && (
-                      <button type="button" onClick={resetCohortForm} className="text-[10px] font-bold text-muted-foreground hover:text-foreground">Cancel</button>
-                    )}
-                  </div>
-                  <Field label="Cohort name">
-                    <input required value={cohortForm.name} onChange={(e) => setCohortForm((p) => ({ ...p, name: e.target.value }))} className={inputClass} placeholder="e.g. FY26 Wave 1" />
-                  </Field>
-                  <Field label="Description">
-                    <input value={cohortForm.description} onChange={(e) => setCohortForm((p) => ({ ...p, description: e.target.value }))} className={inputClass} placeholder="Optional" />
-                  </Field>
-                  <Button type="submit" disabled={busy === "cohort"} className={`${primaryButton} w-full`}>
-                    {busy === "cohort" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    {editingCohort ? "Save changes" : "Create cohort"}
-                  </Button>
-                </form>
-
-                <form onSubmit={bulkMembers} className={`${cardClass} space-y-3`}>
-                  <h3 className="text-sm font-bold flex items-center gap-1.5">
-                    <Upload className="w-4 h-4 text-violet-600" /> Bulk roster
-                  </h3>
-                  <Field label="Cohort">
-                    <select value={bulkCohortId} onChange={(e) => setBulkCohortId(e.target.value)} className={inputClass}>
-                      <option value="">Select a cohort…</option>
-                      {cohorts.map((row, index) => {
-                        const item = cohortFromRow(row);
-                        return <option key={item.id || `bulk-${index}`} value={item.id}>{item.name || "Untitled cohort"}</option>;
-                      })}
-                    </select>
-                  </Field>
-                  <Field label="Upload a roster (optional)" hint="Text/CSV of IDs or emails; appended below">
-                    <input type="file" accept=".txt,.csv" onChange={(e) => void onRosterFile(e)} className="block w-full text-[11px] text-muted-foreground" />
-                  </Field>
-                  <Field label="Or paste employee IDs / emails" hint="One per line, or comma separated">
-                    <textarea value={bulkMembersText} onChange={(e) => setBulkMembersText(e.target.value)} className={textareaClass} placeholder={"E12345\nname@slalom.com"} />
-                  </Field>
-                  <Button type="submit" disabled={busy === "members"} className={`${primaryButton} w-full`}>
-                    {busy === "members" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    Add members
-                  </Button>
-                </form>
-
-                <form onSubmit={assignAssessment} className={`${cardClass} space-y-3`}>
-                  <h3 className="text-sm font-bold flex items-center gap-1.5">
-                    <Users className="w-4 h-4 text-violet-600" /> Assign assessment
-                  </h3>
-                  <Field label="Assessment">
-                    <select value={assignAssessmentId} onChange={(e) => setAssignAssessmentId(e.target.value)} className={inputClass}>
-                      <option value="">Select an assessment…</option>
-                      {assessments.map((row, index) => {
-                        const item = assessmentFromRow(row);
-                        return <option key={item.id || `assign-a-${index}`} value={item.id}>{item.name || "Untitled assessment"}</option>;
-                      })}
-                    </select>
-                  </Field>
-                  <Field label="Cohort">
-                    <select value={assignCohortId} onChange={(e) => setAssignCohortId(e.target.value)} className={inputClass}>
-                      <option value="">Entire cohort not selected</option>
-                      {cohorts.map((row, index) => {
-                        const item = cohortFromRow(row);
-                        return <option key={item.id || `assign-c-${index}`} value={item.id}>{item.name || "Untitled cohort"}</option>;
-                      })}
-                    </select>
-                  </Field>
-                  <Field label="Or specific employees" hint="Optional; IDs or emails, one per line">
-                    <textarea value={assignEmployeeText} onChange={(e) => setAssignEmployeeText(e.target.value)} className={textareaClass} placeholder="E12345, name@slalom.com" />
-                  </Field>
-                  <Button type="submit" disabled={busy === "assign"} className={`${primaryButton} w-full`}>
-                    {busy === "assign" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    Assign
-                  </Button>
-                </form>
-              </div>
-            </div>
+            <SlalomCohortWorkspace
+              fetcher={fetcher}
+              cohorts={cohorts}
+              assessments={assessments}
+              onCohortsChanged={loadCohorts}
+              onDataChanged={notifyPortalChange}
+              onOpenAssessments={() => setSection("assessments")}
+              onOpenLeaderboard={(cohortId) => { setSection("leaderboard"); changeBoardCohort(cohortId); }}
+            />
           )}
 
           {/* ------------------------------- Content -------------------------------- */}

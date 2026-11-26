@@ -2574,11 +2574,11 @@ export default function CandidatePortal() {
                         <div className="grid grid-cols-2 gap-4 my-6 w-full max-w-md">
                           <div className="flex flex-col items-center gap-1.5">
                             <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Government ID</span>
-                            <img src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                            <img alt="" src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                           </div>
                           <div className="flex flex-col items-center gap-1.5">
                             <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Captured Selfie</span>
-                            <img src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                            <img alt="" src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                           </div>
                         </div>
 
@@ -2624,11 +2624,11 @@ export default function CandidatePortal() {
                         <div className="grid grid-cols-2 gap-4 my-6 w-full max-w-md">
                           <div className="flex flex-col items-center gap-1.5">
                             <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Government ID</span>
-                            <img src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                            <img alt="" src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                           </div>
                           <div className="flex flex-col items-center gap-1.5">
                             <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Captured Selfie</span>
-                            <img src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                            <img alt="" src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                           </div>
                         </div>
 
@@ -2674,11 +2674,11 @@ export default function CandidatePortal() {
                     <div className="grid grid-cols-2 gap-4 my-6 w-full max-w-md">
                       <div className="flex flex-col items-center gap-1.5">
                         <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Government ID</span>
-                        <img src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                        <img alt="" src={idImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                       </div>
                       <div className="flex flex-col items-center gap-1.5">
                         <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Captured Selfie</span>
-                        <img src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
+                        <img alt="" src={selfieImageBase64} className="w-full aspect-video object-cover rounded-xl border border-border shadow-sm" />
                       </div>
                     </div>
 
@@ -2705,7 +2705,7 @@ export default function CandidatePortal() {
                     <div className="grid grid-cols-2 gap-6 my-6 w-full max-w-lg">
                       <div className="flex flex-col items-center gap-2 relative">
                         <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Government ID</span>
-                        <img src={idImageBase64} className="w-full aspect-video object-cover rounded-2xl border border-slate-200 dark:border-slate-805 shadow-md bg-slate-950" />
+                        <img alt="" src={idImageBase64} className="w-full aspect-video object-cover rounded-2xl border border-slate-200 dark:border-slate-805 shadow-md bg-slate-950" />
                         <Button
                           variant="secondary"
                           onClick={() => setIdImageBase64(null)}
@@ -2716,7 +2716,7 @@ export default function CandidatePortal() {
                       </div>
                       <div className="flex flex-col items-center gap-2 relative">
                         <span className="text-[10px] text-slate-500 uppercase tracking-widest font-black">Captured Selfie</span>
-                        <img src={selfieImageBase64} className="w-full aspect-video object-cover rounded-2xl border border-slate-200 dark:border-slate-805 shadow-md bg-slate-950" />
+                        <img alt="" src={selfieImageBase64} className="w-full aspect-video object-cover rounded-2xl border border-slate-200 dark:border-slate-805 shadow-md bg-slate-950" />
                         <Button
                           variant="secondary"
                           onClick={() => setSelfieImageBase64(null)}

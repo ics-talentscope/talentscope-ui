@@ -448,18 +448,17 @@ export default function EmployeeAuthGate({ children }: { children: React.ReactNo
     let countdownTimer: any;
     if (isIdle && !isOnLiveTest) {
       countdownTimer = setInterval(() => {
-        setCountdown(prev => {
-          if (prev <= 1) {
-            clearInterval(countdownTimer);
-            handleLogout("inactivity");
-            return 0;
-          }
-          return prev - 1;
-        });
+        setCountdown(prev => Math.max(0, prev - 1));
       }, 1000);
     }
     return () => clearInterval(countdownTimer);
   }, [isIdle, isOnLiveTest]);
+
+  useEffect(() => {
+    if (isIdle && !isOnLiveTest && countdown <= 0) {
+      handleLogout("inactivity");
+    }
+  }, [isIdle, isOnLiveTest, countdown]);
 
   if (loading) {
     return <CenteredPageLoading label="Verifying your portal access" />;

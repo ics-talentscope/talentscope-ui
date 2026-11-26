@@ -1960,6 +1960,7 @@ export default function AdminDashboard() {
     if (!authenticated || !adminEmail) return;
     let cancelled = false;
     let seenRevision = -1;
+    let wasActive = false;
     let inFlight = false;
 
     const pullRemoteChanges = async () => {
@@ -1972,15 +1973,19 @@ export default function AdminDashboard() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
         const revision = Number(data.revision) || 0;
-        if (seenRevision < 0) {
-          seenRevision = revision;
-          return;
-        }
-        if (revision === seenRevision) return;
+        const active = Number(data.activeTests) || 0;
+        const testsLive = active > 0 || wasActive;
+        wasActive = active > 0;
+        const changed = seenRevision >= 0 && revision !== seenRevision;
         const previousRevision = seenRevision;
         seenRevision = revision;
-        if (data.client && data.client === CLIENT_ID && revision === previousRevision + 1) return;
+        if (!changed && !testsLive) return;
+        if (changed && !testsLive && data.client && data.client === CLIENT_ID && revision === previousRevision + 1) return;
         const loaders = liveReloadRef.current;
+        if (!changed) {
+          await loaders.loadEmployees({ fresh: true, silent: true });
+          return;
+        }
         await Promise.all([
           loaders.loadEmployees({ fresh: true, silent: true }),
           loaders.loadResumes(adminEmail, { silent: true }),
@@ -1996,7 +2001,7 @@ export default function AdminDashboard() {
 
     const intervalId = window.setInterval(() => {
       void pullRemoteChanges();
-    }, 8000);
+    }, 10000);
     const onVisibility = () => {
       if (document.visibilityState === "visible") void pullRemoteChanges();
     };
